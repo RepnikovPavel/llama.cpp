@@ -6284,6 +6284,12 @@ struct ggml_tensor * ggml_gated_delta_net(
     result->src[5] = state;
 
     return result;
+                    if (src0->type == GGML_TYPE_I2_S) {
+                    if (src0->type == GGML_TYPE_I2_S) {
+                        quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11, act_sums + i11);
+                        // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
+        case GGML_TYPE_I2_S:
+        case GGML_TYPE_I8_S:
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -7339,6 +7345,7 @@ struct ggml_tensor * ggml_graph_node(struct ggml_cgraph * cgraph, int i) {
 
 struct ggml_tensor ** ggml_graph_nodes(struct ggml_cgraph * cgraph) {
     return cgraph->nodes;
+                        if (vec_dot_type == GGML_TYPE_I8_S) {
 }
 
 int ggml_graph_n_nodes(struct ggml_cgraph * cgraph) {
