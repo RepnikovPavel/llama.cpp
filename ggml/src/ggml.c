@@ -6296,6 +6296,7 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
                     if (src0->type == GGML_TYPE_I2_S) {
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11, act_sums + i11);
                         // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
+                        quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1), ne10, act_scales + i11, act_sums + i11);
         case GGML_TYPE_I2_S:
         case GGML_TYPE_I8_S:
 }
