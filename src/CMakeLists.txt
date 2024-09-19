@@ -1,5 +1,9 @@
 llama_add_compile_flags()
 
+if (GGML_BITNET_ARM_TL1)
+    add_compile_definitions(GGML_BITNET_ARM_TL1)
+endif()
+
 #
 # libraries
 #

@@ -10,7 +10,7 @@ class TensorNameMap:
         # Token embeddings
         MODEL_TENSOR.TOKEN_EMBD: (
             "gpt_neox.embed_in",                         # gptneox
-            "transformer.wte",                           # gpt2 gpt-j mpt refact qwen dbrx jais exaone
+            "transformer.wte",                           # gpt2 gpt-j mpt refact qwen dbrx
             "transformer.word_embeddings",               # falcon
             "word_embeddings",                           # bloom
             "model.embed_tokens",                        # llama-hf nemotron olmoe olmo2 rwkv6qwen2 glm4-0414 plamo2 granite-hybrid
@@ -121,7 +121,6 @@ class TensorNameMap:
         # Rope frequencies
         MODEL_TENSOR.ROPE_FREQS: (
             "rope.freqs",  # llama-pth
-            "rotary_pos_emb.inv_freq",  # chatglm
         ),
 
         MODEL_TENSOR.ROPE_FACTORS_LONG: (),
@@ -185,7 +184,7 @@ class TensorNameMap:
         # Attention norm
         MODEL_TENSOR.ATTN_NORM: (
             "gpt_neox.layers.{bid}.input_layernorm",                # gptneox
-            "transformer.h.{bid}.ln_1",                             # gpt2 gpt-j refact qwen jais exaone
+            "transformer.h.{bid}.ln_1",                             # gpt2 gpt-j refact qwen
             "transformer.blocks.{bid}.norm_1",                      # mpt
             "transformer.h.{bid}.input_layernorm",                  # falcon7b
             "h.{bid}.input_layernorm",                              # bloom
@@ -230,7 +229,7 @@ class TensorNameMap:
         # Attention query-key-value
         MODEL_TENSOR.ATTN_QKV: (
             "gpt_neox.layers.{bid}.attention.query_key_value",                     # gptneox
-            "transformer.h.{bid}.attn.c_attn",                                     # gpt2 qwen jais
+            "transformer.h.{bid}.attn.c_attn",                                     # gpt2 qwen
             "transformer.blocks.{bid}.attn.Wqkv",                                  # mpt
             "transformer.blocks.{bid}.norm_attn_norm.attn.Wqkv",                   # dbrx
             "transformer.h.{bid}.self_attention.query_key_value",                  # falcon
@@ -280,7 +279,6 @@ class TensorNameMap:
             "encoder.layer.{bid}.attention.self.key",                  # bert
             "transformer.layer.{bid}.attention.k_lin",                 # distillbert
             "transformer.h.{bid}.attn.k_proj",                         # gpt-j
-            "transformer.h.{bid}.attn.k",                              # refact
             "model.layers.layers.{bid}.self_attn.k_proj",              # plamo
             "model.layers.{bid}.attention.wk",                         # internlm2
             "transformer.decoder_layer.{bid}.multi_head_attention.key",# Grok
@@ -300,7 +298,6 @@ class TensorNameMap:
             "encoder.layer.{bid}.attention.self.value",                  # bert
             "transformer.layer.{bid}.attention.v_lin",                   # distillbert
             "transformer.h.{bid}.attn.v_proj",                           # gpt-j
-            "transformer.h.{bid}.attn.v",                                # refact
             "model.layers.layers.{bid}.self_attn.v_proj",                # plamo
             "model.layers.{bid}.attention.wv",                           # internlm2
             "transformer.decoder_layer.{bid}.multi_head_attention.value",# Grok
@@ -315,7 +312,7 @@ class TensorNameMap:
         # Attention output
         MODEL_TENSOR.ATTN_OUT: (
             "gpt_neox.layers.{bid}.attention.dense",                        # gptneox
-            "transformer.h.{bid}.attn.c_proj",                              # gpt2 refact qwen jais
+            "transformer.h.{bid}.attn.c_proj",                              # gpt2 refact qwen
             "transformer.blocks.{bid}.attn.out_proj",                       # mpt
             "transformer.h.{bid}.self_attention.dense",                     # falcon
             "h.{bid}.self_attention.dense",                                 # bloom
@@ -390,7 +387,7 @@ class TensorNameMap:
         # Feed-forward norm
         MODEL_TENSOR.FFN_NORM: (
             "gpt_neox.layers.{bid}.post_attention_layernorm",                # gptneox
-            "transformer.h.{bid}.ln_2",                                      # gpt2 refact qwen jais exaone
+            "transformer.h.{bid}.ln_2",                                      # gpt2 refact qwen
             "h.{bid}.post_attention_layernorm",                              # bloom
             "transformer.blocks.{bid}.norm_2",                               # mpt
             "model.layers.{bid}.post_attention_layernorm",                   # llama-hf nemotron olmoe phimoe
@@ -484,7 +481,7 @@ class TensorNameMap:
         # Feed-forward up
         MODEL_TENSOR.FFN_UP: (
             "gpt_neox.layers.{bid}.mlp.dense_h_to_4h",                # gptneox
-            "transformer.h.{bid}.mlp.c_fc",                           # gpt2 jais
+            "transformer.h.{bid}.mlp.c_fc",                           # gpt2
             "transformer.blocks.{bid}.ffn.up_proj",                   # mpt
             "transformer.h.{bid}.mlp.dense_h_to_4h",                  # falcon
             "h.{bid}.mlp.dense_h_to_4h",                              # bloom
@@ -619,7 +616,7 @@ class TensorNameMap:
         # Feed-forward down
         MODEL_TENSOR.FFN_DOWN: (
             "gpt_neox.layers.{bid}.mlp.dense_4h_to_h",                # gptneox
-            "transformer.h.{bid}.mlp.c_proj",                         # gpt2 refact qwen jais
+            "transformer.h.{bid}.mlp.c_proj",                         # gpt2 refact qwen
             "transformer.blocks.{bid}.ffn.down_proj",                 # mpt
             "transformer.h.{bid}.mlp.dense_4h_to_h",                  # falcon
             "h.{bid}.mlp.dense_4h_to_h",                              # bloom
@@ -2436,18 +2433,18 @@ class TensorNameMap:
             self.mapping[tensor_name] = (tensor, tensor_name)
             for key in keys:
                 self.mapping[key] = (tensor, tensor_name)
-        if arch in self.arch_block_mappings_cfg:
-            self.block_mappings_cfg.update(self.arch_block_mappings_cfg[arch])
         for bid in range(n_blocks):
             for tensor, keys in self.block_mappings_cfg.items():
                 if tensor not in MODEL_TENSORS[arch]:
                     continue
-
-                tensor_name = TENSOR_NAMES[tensor].format(bid = bid)
-                self.mapping[tensor_name] = (tensor, tensor_name)
-                for key in keys:
-                    key = key.format(bid = bid)
-                    self.mapping[key] = (tensor, tensor_name)
+                # TODO: make this configurable
+                n_experts = 60
+                for xid in range(n_experts):
+                    tensor_name = TENSOR_NAMES[tensor].format(bid = bid, xid = xid)
+                    self.mapping[tensor_name] = (tensor, tensor_name)
+                    for key in keys:
+                        key = key.format(bid = bid, xid = xid)
+                        self.mapping[key] = (tensor, tensor_name)
 
     def get_type_and_name(self, key: str, try_suffixes: Sequence[str] = ()) -> tuple[MODEL_TENSOR, str] | None:
         result = self.mapping.get(key)

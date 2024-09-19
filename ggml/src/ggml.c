@@ -41,6 +41,7 @@
 #include <unistd.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
+#include "ggml-tmac.h"
 #endif
 
 #if defined(_WIN32)
@@ -1297,7 +1298,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-        if(tensor->type == GGML_TYPE_I2_S){
+        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_I2) {
             nbytes = nbytes / 4 + 32;
         }
     }
@@ -1595,6 +1596,7 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
         // initialize time system (required on Windows)
         ggml_time_init();
 
+        ggml_tmac_init();
         is_first_call = false;
     }
 
@@ -6289,15 +6291,35 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
             i2_scale[0] = fabs(A[i]);
             dst[i] = (double)A[i] * i2_scale[0] > 0 ? 1 : -1;
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
+    if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
         float* i2_scale = (float*)malloc(sizeof(float));
         weight_quant(src0->ne[1], src0->ne[0], (float*)src0->data, int_A, i2_scale);        
             ((float*)(dst->data))[i] = int_C[i] / act_scale[0] * i2_scale[0];
         free(i2_scale);
+#if defined(GGML_BITNET_ARM_TL1)
+    if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
+        const int bits = ggml_tmac_get_type_bits(type);
+        struct tmac_tensor_extra * wt = src0->extra;
+        tmac_float_type * tmac_f_ptr = wdata;
+        if (sizeof(tmac_float_type) == 2) {
+            cur_wdata = wdata + MAX(ne10, ne01) * ne11 * sizeof(tmac_float_type);
+        tmac_float_type * lut_scales = (tmac_float_type *) (qlut + ne10 * ne11 * 16);
+        tmac_float_type * lut_biases = (tmac_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+        ggml_tmac_transform_tensor(src0);
+        tmac_float_type * act_input;
+        if (sizeof(tmac_float_type) == 2) {
+            ggml_fp32_to_fp16_row(src1->data, tmac_f_ptr, ne10 * ne11);
+            act_input = tmac_f_ptr;
+        tmac_float_type * act_output;
+        if (sizeof(tmac_float_type) == 2) {
+            act_output = tmac_f_ptr;
+            if (sizeof(tmac_float_type) == 2) {
                     if (src0->type == GGML_TYPE_I2_S) {
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11, act_sums + i11);
                         // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1), ne10, act_scales + i11, act_sums + i11);
         case GGML_TYPE_I2_S:
+        case GGML_TYPE_I2:
         case GGML_TYPE_I8_S:
 }
 
@@ -7354,6 +7376,9 @@ struct ggml_tensor * ggml_graph_node(struct ggml_cgraph * cgraph, int i) {
 
 struct ggml_tensor ** ggml_graph_nodes(struct ggml_cgraph * cgraph) {
     return cgraph->nodes;
+#if defined(GGML_BITNET_ARM_TL1)
+                    if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
+                        cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
                         if (vec_dot_type == GGML_TYPE_I8_S) {
 }
 
