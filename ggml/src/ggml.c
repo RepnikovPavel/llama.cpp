@@ -620,6 +620,8 @@ FILE * ggml_fopen(const char * fname, const char * mode) {
 }
 
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+    [GGML_TYPE_TL1] = {
+        .type_name                = "tl1",
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,
@@ -1298,7 +1300,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_I2) {
+        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1) {
             nbytes = nbytes / 4 + 32;
         }
     }
@@ -6292,6 +6294,7 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
             dst[i] = (double)A[i] * i2_scale[0] > 0 ? 1 : -1;
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
+    if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_TL1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
         float* i2_scale = (float*)malloc(sizeof(float));
         weight_quant(src0->ne[1], src0->ne[0], (float*)src0->data, int_A, i2_scale);        
             ((float*)(dst->data))[i] = int_C[i] / act_scale[0] * i2_scale[0];
@@ -6319,7 +6322,7 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
                         // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1), ne10, act_scales + i11, act_sums + i11);
         case GGML_TYPE_I2_S:
-        case GGML_TYPE_I2:
+        case GGML_TYPE_TL1:
         case GGML_TYPE_I8_S:
 }
 
