@@ -4627,6 +4627,8 @@ class LlamaFileType(IntEnum):
     GUESSED              = 1024  # not specified in the model file
     TL1     = 38
     TL2     = 39
+    # TL1     = 38
+    # TL2     = 39
 
 
 class GGUFEndian(IntEnum):
@@ -4753,6 +4755,8 @@ GGML_QUANT_SIZES = {
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
     GGMLQuantizationType.TL1:      (4, 1),
     GGMLQuantizationType.TL2:      (4, 1),
+    # GGMLQuantizationType.TL1:      (4, 1),
+    # GGMLQuantizationType.TL2:      (4, 1),
 }
 
 
