@@ -622,6 +622,8 @@ FILE * ggml_fopen(const char * fname, const char * mode) {
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
     [GGML_TYPE_TL1] = {
         .type_name                = "tl1",
+    [GGML_TYPE_TL2] = {
+        .type_name                = "tl2",
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,
@@ -1300,7 +1302,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1) {
+        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1 || tensor->type == GGML_TYPE_TL2) {
             nbytes = nbytes / 4 + 32;
         }
     }
@@ -6320,6 +6322,7 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
             if (sizeof(tmac_float_type) == 2) {
 #if defined(GGML_BITNET_X86_TL2)
     if (ggml_tmac_can_mul_mat(src0, src1, dst)) {\
+    if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
         struct tmac_tensor_extra * wt = src0->extra;
         tmac_float_type * tmac_f_ptr = wdata;
         if (sizeof(tmac_float_type) == 2) {
@@ -6340,6 +6343,7 @@ void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_sc
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1), ne10, act_scales + i11, act_sums + i11);
         case GGML_TYPE_I2_S:
         case GGML_TYPE_TL1:
+        case GGML_TYPE_TL2:
         case GGML_TYPE_I8_S:
 }
 
