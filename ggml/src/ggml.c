@@ -42,6 +42,7 @@
 #include <mach/mach.h>
 #include <TargetConditionals.h>
 #include "ggml-tmac.h"
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
 #endif
 
 #if defined(_WIN32)
@@ -1601,6 +1602,7 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
         ggml_time_init();
 
         ggml_tmac_init();
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
         is_first_call = false;
     }
 
@@ -7401,6 +7403,7 @@ struct ggml_tensor * ggml_graph_node(struct ggml_cgraph * cgraph, int i) {
 struct ggml_tensor ** ggml_graph_nodes(struct ggml_cgraph * cgraph) {
     return cgraph->nodes;
 #if defined(GGML_BITNET_ARM_TL1)
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
                     if (ggml_tmac_can_mul_mat(node->src[0], node->src[1], node)) {
                         cur = ggml_tmac_mul_mat_get_wsize(node->src[0], node->src[1], node);
                         if (vec_dot_type == GGML_TYPE_I8_S) {
