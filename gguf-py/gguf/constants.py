@@ -10,6 +10,7 @@ from typing import Any
 GGUF_MAGIC             = 0x46554747  # "GGUF"
 GGUF_VERSION           = 3
 GGUF_DEFAULT_ALIGNMENT = 32
+GGML_QUANT_VERSION     = 2  # GGML_QNT_VERSION from ggml.h
 
 #
 # metadata keys
@@ -390,6 +391,9 @@ class Keys:
         BETA                = "xielu.beta"
         EPS                 = "xielu.eps"
 
+    class Adapter:
+        TYPE       = "adapter.type"
+        LORA_ALPHA = "adapter.lora.alpha"
 
 #
 # recommended mapping of model tensor names for storage in gguf
@@ -552,6 +556,7 @@ class VISION_PROJECTOR_TYPE(IntEnum):
     QWEN3VL   = auto()
     STEP3VL   = auto()
     COGVLM    = auto()
+    BITNET       = auto()
 
 
 class MODEL_TENSOR(IntEnum):
@@ -1131,6 +1136,7 @@ VISION_PROJECTOR_TYPE_NAMES: dict[VISION_PROJECTOR_TYPE, str] = {
     VISION_PROJECTOR_TYPE.GEMMA3:    "gemma3",
     VISION_PROJECTOR_TYPE.QWEN3VL:   "qwen3vl_merger",
     VISION_PROJECTOR_TYPE.STEP3VL:   "step3vl",
+    MODEL_ARCH.BITNET:         "bitnet",
 }
 
 TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
@@ -2037,20 +2043,6 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_DOWN,
         MODEL_TENSOR.FFN_UP,
     ],
-    MODEL_ARCH.PERSIMMON: [
-        MODEL_TENSOR.TOKEN_EMBD,
-        MODEL_TENSOR.OUTPUT,
-        MODEL_TENSOR.OUTPUT_NORM,
-        MODEL_TENSOR.ATTN_NORM,
-        MODEL_TENSOR.ATTN_QKV,
-        MODEL_TENSOR.ATTN_OUT,
-        MODEL_TENSOR.FFN_NORM,
-        MODEL_TENSOR.FFN_DOWN,
-        MODEL_TENSOR.FFN_UP,
-        MODEL_TENSOR.ATTN_Q_NORM,
-        MODEL_TENSOR.ATTN_K_NORM,
-        MODEL_TENSOR.ATTN_ROT_EMBD,
-    ],
     MODEL_ARCH.REFACT: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.OUTPUT_NORM,
@@ -2093,24 +2085,6 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_UP,
         MODEL_TENSOR.ATTN_Q_NORM,
         MODEL_TENSOR.ATTN_K_NORM,
-    ],
-    MODEL_ARCH.BITNET: [
-        MODEL_TENSOR.ATTN_Q,
-        MODEL_TENSOR.ATTN_K,
-        MODEL_TENSOR.ATTN_V,
-        MODEL_TENSOR.TOKEN_EMBD,
-        MODEL_TENSOR.OUTPUT_NORM,
-        MODEL_TENSOR.ROPE_FREQS,
-        MODEL_TENSOR.ATTN_NORM,
-        MODEL_TENSOR.ATTN_QKV,
-        MODEL_TENSOR.ATTN_OUT,
-        MODEL_TENSOR.ATTN_ROT_EMBD,
-        MODEL_TENSOR.FFN_NORM,
-        MODEL_TENSOR.FFN_GATE,
-        MODEL_TENSOR.FFN_DOWN,
-        MODEL_TENSOR.FFN_UP,
-        MODEL_TENSOR.ATTN_SUB_NORM,
-        MODEL_TENSOR.FFN_SUB_NORM,
     ],
     MODEL_ARCH.QWEN: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -2539,6 +2513,7 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
     ],
     MODEL_ARCH.MINICPM: [
         MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT,
         MODEL_TENSOR.OUTPUT_NORM,
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ROPE_FACTORS_LONG,
@@ -4449,9 +4424,6 @@ MODEL_TENSOR_SKIP: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ATTN_ROT_EMBD,
     ],
-    MODEL_ARCH.PERSIMMON: [
-        MODEL_TENSOR.ROPE_FREQS,
-    ],
     MODEL_ARCH.QWEN: [
         MODEL_TENSOR.ROPE_FREQS,
         MODEL_TENSOR.ATTN_ROT_EMBD,
@@ -4631,6 +4603,54 @@ class LlamaFileType(IntEnum):
     # TL2     = 39
 
 
+# TODO: add GGMLFileType from ggml_ftype in ggml.h
+
+
+# from llama_ftype in llama.h
+# ALL VALUES SHOULD BE THE SAME HERE AS THEY ARE OVER THERE.
+class LlamaFileType(IntEnum):
+    ALL_F32              = 0
+    MOSTLY_F16           = 1   # except 1d tensors
+    MOSTLY_Q4_0          = 2   # except 1d tensors
+    MOSTLY_Q4_1          = 3   # except 1d tensors
+    # MOSTLY_Q4_1_SOME_F16 = 4   # tok_embeddings.weight and output.weight are F16
+    # MOSTLY_Q4_2        = 5   # support has been removed
+    # MOSTLY_Q4_3        = 6   # support has been removed
+    MOSTLY_Q8_0          = 7   # except 1d tensors
+    MOSTLY_Q5_0          = 8   # except 1d tensors
+    MOSTLY_Q5_1          = 9   # except 1d tensors
+    MOSTLY_Q2_K          = 10  # except 1d tensors
+    MOSTLY_Q3_K_S        = 11  # except 1d tensors
+    MOSTLY_Q3_K_M        = 12  # except 1d tensors
+    MOSTLY_Q3_K_L        = 13  # except 1d tensors
+    MOSTLY_Q4_K_S        = 14  # except 1d tensors
+    MOSTLY_Q4_K_M        = 15  # except 1d tensors
+    MOSTLY_Q5_K_S        = 16  # except 1d tensors
+    MOSTLY_Q5_K_M        = 17  # except 1d tensors
+    MOSTLY_Q6_K          = 18  # except 1d tensors
+    MOSTLY_IQ2_XXS       = 19  # except 1d tensors
+    MOSTLY_IQ2_XS        = 20  # except 1d tensors
+    MOSTLY_Q2_K_S        = 21  # except 1d tensors
+    MOSTLY_IQ3_XS        = 22  # except 1d tensors
+    MOSTLY_IQ3_XXS       = 23  # except 1d tensors
+    MOSTLY_IQ1_S         = 24  # except 1d tensors
+    MOSTLY_IQ4_NL        = 25  # except 1d tensors
+    MOSTLY_IQ3_S         = 26  # except 1d tensors
+    MOSTLY_IQ3_M         = 27  # except 1d tensors
+    MOSTLY_IQ2_S         = 28  # except 1d tensors
+    MOSTLY_IQ2_M         = 29  # except 1d tensors
+    MOSTLY_IQ4_XS        = 30  # except 1d tensors
+    MOSTLY_IQ1_M         = 31  # except 1d tensors
+    MOSTLY_BF16          = 32  # except 1d tensors
+    MOSTLY_Q4_0_4_4      = 33  # except 1d tensors
+    MOSTLY_Q4_0_4_8      = 34  # except 1d tensors
+    MOSTLY_Q4_0_8_8      = 35  # except 1d tensors
+    MOSTLY_TQ1_0         = 36  # except 1d tensors
+    MOSTLY_TQ2_0         = 37  # except 1d tensors
+
+    GUESSED              = 1024  # not specified in the model file
+
+
 class GGUFEndian(IntEnum):
     LITTLE = 0
     BIG = 1
@@ -4718,7 +4738,8 @@ class VisionProjectorType:
 # Items here are (block size, type size)
 QK_K = 256
 # Items here are (block size, type size)
-GGML_QUANT_SIZES = {
+QK_K = 256
+GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.F32:     (1, 4),
     GGMLQuantizationType.F16:     (1, 2),
     GGMLQuantizationType.Q4_0:    (32, 2 + 16),
@@ -4772,7 +4793,6 @@ KEY_GENERAL_URL                  = Keys.General.URL
 KEY_GENERAL_DESCRIPTION          = Keys.General.DESCRIPTION
 KEY_GENERAL_LICENSE              = Keys.General.LICENSE
 KEY_GENERAL_SOURCE_URL           = Keys.General.SOURCE_URL
-KEY_GENERAL_SOURCE_HF_REPO       = Keys.General.SOURCE_HF_REPO
 KEY_GENERAL_FILE_TYPE            = Keys.General.FILE_TYPE
 
 # LLM
