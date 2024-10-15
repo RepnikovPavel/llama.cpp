@@ -6294,14 +6294,20 @@ struct ggml_tensor * ggml_gated_delta_net(
     return result;
                     if (src0->type == GGML_TYPE_I2_S) {
 void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_scale) {
+void weight_quant_f32(const int M, const int K, float* A, int32_t* dst, float* i2_scale) {
             i2_scale[0] = fabs(A[i]);
             dst[i] = (double)A[i] * i2_scale[0] > 0 ? 1 : -1;
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_I2 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
+void weight_quant_f16(const int M, const int K, uint16_t* A, int32_t* dst, float* i2_scale) {
+            i2_scale[0] = fabs(temp_A);
+            dst[i] = (double)temp_A * i2_scale[0] > 0 ? 1 : -1;
 #ifndef GGML_BITNET_X86_TL2
     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_TL1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
         float* i2_scale = (float*)malloc(sizeof(float));
         weight_quant(src0->ne[1], src0->ne[0], (float*)src0->data, int_A, i2_scale);        
+            weight_quant_f32(src0->ne[1], src0->ne[0], src0->data, int_A, i2_scale);
+            weight_quant_f16(src0->ne[1], src0->ne[0], src0->data, int_A, i2_scale);
             ((float*)(dst->data))[i] = int_C[i] / act_scale[0] * i2_scale[0];
         free(i2_scale);
 #if defined(GGML_BITNET_ARM_TL1)
