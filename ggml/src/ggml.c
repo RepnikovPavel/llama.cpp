@@ -43,6 +43,7 @@
 #include <TargetConditionals.h>
 #include "ggml-tmac.h"
 #if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+#include "ggml-bitnet.h"
 #endif
 
 #if defined(_WIN32)
@@ -1603,6 +1604,7 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
 
         ggml_tmac_init();
 #if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+        ggml_bitnet_init();
         is_first_call = false;
     }
 
@@ -6345,6 +6347,38 @@ void weight_quant_f16(const int M, const int K, uint16_t* A, int32_t* dst, float
         tmac_float_type * act_output;
         if (sizeof(tmac_float_type) == 2) {
             act_output = tmac_f_ptr;
+    if (ggml_bitnet_can_mul_mat(src0, src1, dst)) {
+        const int bits = ggml_bitnet_get_type_bits(type);
+        struct bitnet_tensor_extra * wt = src0->extra;
+        bitnet_float_type * bitnet_f_ptr = wdata;
+        if (sizeof(bitnet_float_type) == 2) {
+            cur_wdata = wdata + MAX(ne10, ne01) * ne11 * sizeof(bitnet_float_type);
+        bitnet_float_type * lut_scales = (bitnet_float_type *) (qlut + ne10 * ne11 * 16);
+        bitnet_float_type * lut_biases = (bitnet_float_type *) (lut_scales + wt->lut_scales_size * ne11);
+            ggml_bitnet_transform_tensor(src0);
+            bitnet_float_type * act_input;
+            if (sizeof(bitnet_float_type) == 2) {
+                ggml_fp32_to_fp16_row(src1->data, bitnet_f_ptr, ne10 * ne11);
+                act_input = bitnet_f_ptr;
+        bitnet_float_type * act_output;
+        if (sizeof(bitnet_float_type) == 2) {
+            act_output = bitnet_f_ptr;
+            if (sizeof(bitnet_float_type) == 2) {
+    if (ggml_bitnet_can_mul_mat(src0, src1, dst)) {
+        struct bitnet_tensor_extra * wt = src0->extra;
+        bitnet_float_type * bitnet_f_ptr = wdata;
+        if (sizeof(bitnet_float_type) == 2) {
+            cur_wdata = wdata + MAX(ne10, ne01) * ne11 * sizeof(bitnet_float_type);
+        bitnet_float_type * lut_scales;
+        lut_scales = (bitnet_float_type *) (three_qlut + three_k / 3 * 16 * 2 * ne11);
+            ggml_bitnet_transform_tensor(src0);
+            bitnet_float_type * act_input;
+            if (sizeof(bitnet_float_type) == 2) {
+                ggml_fp32_to_fp16_row(src1->data, bitnet_f_ptr, ne10 * ne11);
+                act_input = bitnet_f_ptr;
+        bitnet_float_type * act_output;
+        if (sizeof(bitnet_float_type) == 2) {
+            act_output = bitnet_f_ptr;
                     if (src0->type == GGML_TYPE_I2_S) {
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11, act_sums + i11);
                         // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
@@ -7426,6 +7460,10 @@ void ggml_graph_add_node(struct ggml_cgraph * cgraph, struct ggml_tensor * tenso
 }
 
 struct ggml_tensor * ggml_graph_get_tensor(const struct ggml_cgraph * cgraph, const char * name) {
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+                    if (ggml_bitnet_can_mul_mat(node->src[0], node->src[1], node)) {
+                        cur = ggml_bitnet_mul_mat_get_wsize(node->src[0], node->src[1], node);
+                        if (vec_dot_type == GGML_TYPE_I8_S) {
     for (int i = 0; i < cgraph->n_leafs; i++) {
         struct ggml_tensor * leaf = cgraph->leafs[i];
 
