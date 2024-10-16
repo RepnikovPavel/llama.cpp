@@ -1304,8 +1304,13 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1 || tensor->type == GGML_TYPE_TL2) {
+        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1) {
             nbytes = nbytes / 4 + 32;
+        }
+        else if (tensor->type == GGML_TYPE_TL2) {
+            nbytes = (tensor->ne[0] - 256) * tensor->ne[1] / 3 * 5 / 8 + 256 * tensor->ne[1] / 2 * 4 / 8;
+            if (nbytes % 32 != 0) nbytes = 32 - nbytes % 32 + nbytes;
+            nbytes += 32;
         }
     }
     else {
@@ -6312,6 +6317,13 @@ void weight_quant_f16(const int M, const int K, uint16_t* A, int32_t* dst, float
             weight_quant_f16(src0->ne[1], src0->ne[0], src0->data, int_A, i2_scale);
             ((float*)(dst->data))[i] = int_C[i] / act_scale[0] * i2_scale[0];
         free(i2_scale);
+// #ifndef GGML_BITNET_X86_TL2
+//     if (src1->ne[1] <= 1 && src0->type != GGML_TYPE_TL1 && src0->type != GGML_TYPE_I2_S && src0->type != GGML_TYPE_TQ1_0 && src0->type != GGML_TYPE_TQ2_0 && src0->ne[1] != 32002 && src0->ne[1] != 96 && src0->ne[0] != 96) {
+//         float* i2_scale = (float*)malloc(sizeof(float));
+//             weight_quant_f32(src0->ne[1], src0->ne[0], src0->data, int_A, i2_scale);
+//             weight_quant_f16(src0->ne[1], src0->ne[0], src0->data, int_A, i2_scale);
+//             ((float*)(dst->data))[i] = int_C[i] / act_scale[0] * i2_scale[0];
+//         free(i2_scale);
 #if defined(GGML_BITNET_ARM_TL1)
     if (ggml_tmac_can_mul_mat(src0, src1, dst)) {
         const int bits = ggml_tmac_get_type_bits(type);
@@ -6364,6 +6376,7 @@ void weight_quant_f16(const int M, const int K, uint16_t* A, int32_t* dst, float
         if (sizeof(bitnet_float_type) == 2) {
             act_output = bitnet_f_ptr;
             if (sizeof(bitnet_float_type) == 2) {
+#if defined(GGML_BITNET_X86_TL2)
     if (ggml_bitnet_can_mul_mat(src0, src1, dst)) {
         struct bitnet_tensor_extra * wt = src0->extra;
         bitnet_float_type * bitnet_f_ptr = wdata;
