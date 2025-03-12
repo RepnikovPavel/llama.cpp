@@ -1126,10 +1126,14 @@ class TensorNameMap:
 
         MODEL_TENSOR.ATTN_SUB_NORM: (
             "model.layers.{bid}.self_attn.inner_attn_ln",  # bitnet
+            "layers.{bid}.attention.attn_sub_norm",  # bitnet
+            "model.layers.{bid}.self_attn.attn_sub_norm",
         ),
 
         MODEL_TENSOR.FFN_SUB_NORM: (
             "model.layers.{bid}.mlp.ffn_layernorm",  # bitnet
+            "layers.{bid}.feed_forward.ffn_sub_norm", # bitnet
+            "model.layers.{bid}.mlp.ffn_sub_norm",
         ),
 
         MODEL_TENSOR.DEC_ATTN_NORM: (
