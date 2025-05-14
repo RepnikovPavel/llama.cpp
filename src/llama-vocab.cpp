@@ -353,6 +353,13 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "[0-9]",
                 };
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_FALCON_E:
+                regex_exprs = {
+                    "[\\p{P}\\$\\+<=>\\^~\\|`]+",
+                    "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
+                    "[0-9]",
+                };
+                break;
             case LLAMA_VOCAB_PRE_TYPE_STARCODER:
             case LLAMA_VOCAB_PRE_TYPE_REFACT:
             case LLAMA_VOCAB_PRE_TYPE_COMMAND_R:
