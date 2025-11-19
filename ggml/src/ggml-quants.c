@@ -2436,6 +2436,8 @@ void quantize_row_i8_s(const float * x, void * y, int64_t n, float* act_scales, 
     act_sums[0] = sum;
 }
 
+void quantize_row_i8_s_4x1(const float * x, void * y, int64_t n, float* act_scales, int32_t* act_sums) {
+// void quantize_row_i8_s(const float * x, void * y, int64_t n, float* act_scales) {
 
 // size_t quantize_i2_s(const float * restrict src, void * restrict dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
 //     // 2 bits per weight
@@ -2781,6 +2783,36 @@ void quantize_row_i8_s(const float * x, void * y, int64_t n, float* act_scales, 
 //     // *s = (float)sumi;
 // #endif
 // }
+
+void dequantize_row_i2_s(const uint8_t * x, float * y, int64_t n, const float i2_scale) {
+    static const float map2bit[4] = { -1.0f, 0.0f, +1.0f, 0.0f };
+
+    int64_t done = 0;
+    while (done < n) {
+        const int64_t blk_e = (n - done >= 128) ? 128 : (n - done);
+        const int64_t cols0 = blk_e >= 32 ? 32 : blk_e;              
+        const int64_t cols1 = blk_e >= 64 ? 32 : MAX(0, blk_e - 32); 
+        const int64_t cols2 = blk_e >= 96 ? 32 : MAX(0, blk_e - 64); 
+        const int64_t cols3 = blk_e >= 128 ? 32 : MAX(0, blk_e - 96);
+
+        for (int gp = 0; gp < 32; ++gp) {
+            const uint8_t b = x[gp];
+
+            const uint8_t c0 = (b >> 6) & 0x3;
+            const uint8_t c1 = (b >> 4) & 0x3;
+            const uint8_t c2 = (b >> 2) & 0x3;
+            const uint8_t c3 = (b >> 0) & 0x3;
+
+            if (gp < cols0) y[done + 0*32 + gp] = i2_scale * map2bit[c0];
+            if (gp < cols1) y[done + 1*32 + gp] = i2_scale * map2bit[c1];
+            if (gp < cols2) y[done + 2*32 + gp] = i2_scale * map2bit[c2];
+            if (gp < cols3) y[done + 3*32 + gp] = i2_scale * map2bit[c3];
+        }
+
+        x    += 32;
+        done += blk_e;
+    }
+}
 
 // ====================== "True" 2-bit (de)-quantization
 

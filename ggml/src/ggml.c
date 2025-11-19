@@ -936,7 +936,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .blck_size                = 1,
         .type_size                = sizeof(int8_t),
         .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_i2_s,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_i2_i8_s,
+        .gemv                     = (ggml_gemv_t) ggml_gemv_i2_i8_s,
+        .gemm                     = (ggml_gemm_t) ggml_gemm_i2_i8_s,
+        .nrows                    = 1,
+        .ncols                    = 4,
         .vec_dot_type             = GGML_TYPE_I8_S,
         .nrows                    = 1,
     },
@@ -6301,6 +6306,8 @@ struct ggml_tensor * ggml_gated_delta_net(
     return result;
                     if (src0->type == GGML_TYPE_I2_S) {
 void weight_quant(const int M, const int K, float* A, int32_t* dst, float* i2_scale) {
+                //     if (src0->type == GGML_TYPE_I2_S) {
+                if (src0->type == GGML_TYPE_I2_S && iir0 + blck_0 - 1 < ir0_end) {
 void weight_quant_f32(const int M, const int K, float* A, int32_t* dst, float* i2_scale) {
             i2_scale[0] = fabs(A[i]);
             dst[i] = (double)A[i] * i2_scale[0] > 0 ? 1 : -1;
@@ -6396,6 +6403,12 @@ void weight_quant_f16(const int M, const int K, uint16_t* A, int32_t* dst, float
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11, act_sums + i11);
                         // quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + ((i11*nbw1 + i12*nbw2 + i13*nbw3) / 4)), ne10, act_scales + i11);
                         quantize_row_i8_s((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11), (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1), ne10, act_scales + i11, act_sums + i11);
+            if (src0->type == GGML_TYPE_I2_S) {
+            if (src0->type == GGML_TYPE_I2_S) {
+static void ggml_compute_forward_get_rows_i2_s(
+        dequantize_row_i2_s(
+        case GGML_TYPE_I2_S:
+            ggml_compute_forward_get_rows_i2_s(params, dst);
         case GGML_TYPE_I2_S:
         case GGML_TYPE_TL1:
         case GGML_TYPE_TL2:
