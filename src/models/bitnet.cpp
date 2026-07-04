@@ -168,3 +168,14 @@ llama_model_bitnet::graph::graph(const llama_model & model, const llm_graph_para
 
     ggml_build_forward_expand(gf, cur);
 }
+
+void llama_model_bitnet_b158::load_arch_hparams(llama_model_loader & ml) {
+    ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+
+    switch (hparams.n_layer()) {
+        case 24: type = LLM_TYPE_700M; break;
+        case 26: type = LLM_TYPE_3B;   break;
+        case 30: type = LLM_TYPE_2B;   break; // bitnet2b_2501
+        default: type = LLM_TYPE_UNKNOWN;
+    }
+}

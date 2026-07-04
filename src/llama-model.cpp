@@ -196,6 +196,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_glm4_moe(params);
         case LLM_ARCH_BITNET:
             return new llama_model_bitnet(params);
+        case LLM_ARCH_BITNET_B158:
+            return new llama_model_bitnet_b158(params);
         case LLM_ARCH_T5:
             return new llama_model_t5(params);
         case LLM_ARCH_T5ENCODER:
@@ -2477,6 +2479,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_EUROBERT:
         case LLM_ARCH_STABLELM:
         case LLM_ARCH_BITNET:
+        case LLM_ARCH_BITNET_B158:
         case LLM_ARCH_QWEN:
         case LLM_ARCH_QWEN2:
         case LLM_ARCH_DREAM:

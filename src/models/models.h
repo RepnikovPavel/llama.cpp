@@ -1315,6 +1315,12 @@ struct llama_model_bitnet : public llama_model_base {
 };
 
 
+struct llama_model_bitnet_b158 : public llama_model_bitnet {
+    llama_model_bitnet_b158(const struct llama_model_params & params) : llama_model_bitnet(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+};
+
+
 struct llama_model_t5 : public llama_model_base {
     llama_model_t5(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
