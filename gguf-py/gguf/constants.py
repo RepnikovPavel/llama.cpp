@@ -4564,6 +4564,10 @@ class GGMLQuantizationType(IntEnum):
     MXFP4   = 39
     NVFP4   = 40
     Q1_0    = 41
+    I2_S    = 42
+    I8_S    = 43
+    TL1     = 44
+    TL2     = 45
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -4619,12 +4623,11 @@ class LlamaFileType(IntEnum):
     MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
     MOSTLY_NVFP4         = 39  # except 1d tensors
     MOSTLY_Q1_0          = 40  # except 1d tensors
+    MOSTLY_I2_S          = 41  # except 1d tensors
+    MOSTLY_TL1           = 42
+    MOSTLY_TL2           = 43
 
     GUESSED              = 1024  # not specified in the model file
-    TL1     = 38
-    TL2     = 39
-    # TL1     = 38
-    # TL2     = 39
 
 
 # TODO: add GGMLFileType from ggml_ftype in ggml.h
@@ -4798,10 +4801,10 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
     GGMLQuantizationType.MXFP4:   (32, 1 + 16),
     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
+    GGMLQuantizationType.I2_S:     (1, 1),
+    GGMLQuantizationType.I8_S:     (1, 1),
     GGMLQuantizationType.TL1:      (4, 1),
     GGMLQuantizationType.TL2:      (4, 1),
-    # GGMLQuantizationType.TL1:      (4, 1),
-    # GGMLQuantizationType.TL2:      (4, 1),
 }
 
 
