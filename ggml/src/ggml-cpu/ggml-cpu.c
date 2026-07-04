@@ -50,6 +50,10 @@
 #include "llamafile/sgemm.h"
 #endif
 
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+#include "ggml-bitnet.h"
+#endif
+
 #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
 #    include "spacemit/ime.h"
 #endif
@@ -1252,6 +1256,15 @@ void ggml_compute_forward_mul_mat(
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
+    // BitNet T-MAC fast path: if the weight tensor has BitNet T-MAC metadata,
+    // use the specialized lookup-table based matrix multiplication.
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+    if (ggml_bitnet_can_mul_mat(src0, src1, dst)) {
+        ggml_bitnet_mul_mat(params, dst);
+        return;
+    }
+#endif
+
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
     if (hint == GGML_HINT_SRC0_IS_HADAMARD && !params->use_ref) {
         ggml_compute_forward_fwht(params, dst);
@@ -1324,6 +1337,14 @@ UseGgmlGemm1:;
         assert(params->wsize >= ne13*nbw3);
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
+        // I2_S needs extra space for activation scales and sums
+        float * act_scales = NULL;
+        int32_t * act_sums = NULL;
+        if (src0->type == GGML_TYPE_I2_S) {
+            act_scales = (float *) ((char *) wdata + (ne11 * ne10));
+            act_sums = (int32_t *) ((char *) act_scales + (ne11) * sizeof(float));
+        }
+
     #if 0
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
@@ -1338,12 +1359,20 @@ UseGgmlGemm1:;
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
                 for (int64_t i11 = 0; i11 < ne11; ++i11) {
-                    size_t bs = ggml_blck_size(vec_dot_type);
-                    int64_t ne10_block_start = (ith * ne10/bs) / nth;
-                    int64_t ne10_block_end   = ((ith + 1) * ne10/bs) / nth;
-                    from_float((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + ne10_block_start*bs*nb10),
-                               (void *)               (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1 + ne10_block_start*nbw0),
-                               (ne10_block_end - ne10_block_start) * bs);
+                    if (src0->type == GGML_TYPE_I2_S) {
+                        // I2_S: use specialized i8_s quantization with activation scaling
+                        quantize_row_i8_s(
+                            (float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11),
+                            (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1),
+                            ne10, act_scales + i11, act_sums + i11);
+                    } else {
+                        size_t bs = ggml_blck_size(vec_dot_type);
+                        int64_t ne10_block_start = (ith * ne10/bs) / nth;
+                        int64_t ne10_block_end   = ((ith + 1) * ne10/bs) / nth;
+                        from_float((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + ne10_block_start*bs*nb10),
+                                   (void *)               (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1 + ne10_block_start*nbw0),
+                                   (ne10_block_end - ne10_block_start) * bs);
+                    }
                 }
             }
         }
@@ -2823,8 +2852,20 @@ struct ggml_cplan ggml_graph_plan(
                     {
                         const enum ggml_type vec_dot_type = type_traits_cpu[node->src[0]->type].vec_dot_type;
 
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+                        if (ggml_bitnet_can_mul_mat(node->src[0], node->src[1], node)) {
+                            cur = ggml_bitnet_mul_mat_get_wsize(node->src[0], node->src[1], node);
+                        } else
+#endif
                         if (node->src[1]->type != vec_dot_type) {
-                            cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
+                            if (vec_dot_type == GGML_TYPE_I8_S) {
+                                // I2_S needs extra space for act_scales and act_sums
+                                cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]))
+                                    + node->src[1]->ne[1] * sizeof(float)
+                                    + node->src[1]->ne[1] * sizeof(int32_t);
+                            } else {
+                                cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
+                            }
                         }
                     } break;
                 case GGML_OP_MUL_MAT_ID:
