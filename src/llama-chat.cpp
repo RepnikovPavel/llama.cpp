@@ -39,6 +39,7 @@ static const std::map<std::string, llm_chat_template> LLM_CHAT_TEMPLATES = {
     { "phi3",              LLM_CHAT_TEMPLATE_PHI_3             },
     { "phi4",              LLM_CHAT_TEMPLATE_PHI_4             },
     { "falcon3",           LLM_CHAT_TEMPLATE_FALCON_3          },
+    { "falcon_e",          LLM_CHAT_TEMPLATE_FALCON_E          },
     { "zephyr",            LLM_CHAT_TEMPLATE_ZEPHYR            },
     { "monarch",           LLM_CHAT_TEMPLATE_MONARCH           },
     { "gemma",             LLM_CHAT_TEMPLATE_GEMMA             },
@@ -352,6 +353,15 @@ int32_t llm_chat_apply_template(
         }
     } else if (tmpl == LLM_CHAT_TEMPLATE_FALCON_3) {
         // Falcon 3
+        for (auto message : chat) {
+            std::string role(message->role);
+            ss << "<|" << role << "|>\n" << message->content << "\n";
+        }
+        if (add_ass) {
+            ss << "<|assistant|>\n";
+        }
+    } else if (tmpl == LLM_CHAT_TEMPLATE_FALCON_E) {
+        // Falcon Edge
         for (auto message : chat) {
             std::string role(message->role);
             ss << "<|" << role << "|>\n" << message->content << "\n";
