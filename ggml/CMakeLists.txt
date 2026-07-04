@@ -350,8 +350,6 @@ set(GGML_PUBLIC_HEADERS
     include/ggml-zendnn.h
     include/ggml-openvino.h
     include/gguf.h)
-    include/ggml-tmac.h)
-    include/ggml-bitnet.h)
 
 set_target_properties(ggml PROPERTIES PUBLIC_HEADER "${GGML_PUBLIC_HEADERS}")
 #if (GGML_METAL)

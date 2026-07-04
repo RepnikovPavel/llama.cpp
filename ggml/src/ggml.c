@@ -41,9 +41,6 @@
 #include <unistd.h>
 #include <mach/mach.h>
 #include <TargetConditionals.h>
-#include "ggml-tmac.h"
-#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
-#include "ggml-bitnet.h"
 #endif
 
 #if defined(_WIN32)
@@ -622,10 +619,6 @@ FILE * ggml_fopen(const char * fname, const char * mode) {
 }
 
 static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
-    [GGML_TYPE_TL1] = {
-        .type_name                = "tl1",
-    [GGML_TYPE_TL2] = {
-        .type_name                = "tl2",
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,
@@ -937,20 +930,25 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(int8_t),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_i2_s,
-        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_i2_i8_s,
-        .gemv                     = (ggml_gemv_t) ggml_gemv_i2_i8_s,
-        .gemm                     = (ggml_gemm_t) ggml_gemm_i2_i8_s,
-        .nrows                    = 1,
-        .ncols                    = 4,
-        .vec_dot_type             = GGML_TYPE_I8_S,
-        .nrows                    = 1,
     },
     [GGML_TYPE_I8_S] = {
         .type_name                = "i8_s",
         .blck_size                = 1,
         .type_size                = sizeof(int8_t),
         .is_quantized             = true,
-    }
+    },
+    [GGML_TYPE_TL1] = {
+        .type_name                = "tl1",
+        .blck_size                = 1,
+        .type_size                = sizeof(int8_t),
+        .is_quantized             = false,
+    },
+    [GGML_TYPE_TL2] = {
+        .type_name                = "tl2",
+        .blck_size                = 1,
+        .type_size                = sizeof(int8_t),
+        .is_quantized             = false,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -1309,10 +1307,10 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-        if(tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1) {
+        // BitNet I2_S/TL1/TL2: special nbytes for packed weight data
+        if (tensor->type == GGML_TYPE_I2_S || tensor->type == GGML_TYPE_TL1) {
             nbytes = nbytes / 4 + 32;
-        }
-        else if (tensor->type == GGML_TYPE_TL2) {
+        } else if (tensor->type == GGML_TYPE_TL2) {
             nbytes = (tensor->ne[0] - 256) * tensor->ne[1] / 3 * 5 / 8 + 256 * tensor->ne[1] / 2 * 4 / 8;
             if (nbytes % 32 != 0) nbytes = 32 - nbytes % 32 + nbytes;
             nbytes += 32;
@@ -7778,6 +7776,7 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_Q6_K:    result = quantize_q6_K   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ1_0:   result = quantize_tq1_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_TQ2_0:   result = quantize_tq2_0  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_I2_S:    result = quantize_i2_s   (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XXS: result = quantize_iq2_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ2_XS:  result = quantize_iq2_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ3_XXS: result = quantize_iq3_xxs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
@@ -7809,7 +7808,9 @@ size_t ggml_quantize_chunk(
             assert(false);
     }
 
-        result = nrows * row_size / 4 + 32;
+    if (type == GGML_TYPE_I2_S) {
+        // I2_S packs 4 elements per byte + 32 bytes header
+        GGML_ASSERT(result == nrows * row_size / 4 + 32);
     } else {
         GGML_ASSERT(result == nrows * row_size);
     }

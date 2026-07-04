@@ -13,6 +13,7 @@
 #include "vec.h"
 #include "ops.h"
 #include "ggml.h"
+#include "ggml-quants.h"
 #include "common.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)

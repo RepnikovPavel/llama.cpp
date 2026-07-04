@@ -196,9 +196,6 @@ add_library(ggml-base
             ../include/ggml-cpp.h
             ../include/ggml-opt.h
             ../include/gguf.h
-            ../include/ggml-tmac.h
-            ../../../../include/bitnet-lut-kernels.h
-            ../../../../include/ggml-bitnet.h
             ggml.c
             ggml.cpp
             ggml-alloc.c
@@ -210,9 +207,6 @@ add_library(ggml-base
             ggml-quants.c
             ggml-quants.h
             gguf.cpp)
-            ggml-tmac.cpp
-            ../../../../src/ggml-bitnet-mad.cpp
-            ../../../../src/ggml-bitnet-lut.cpp
 
 set_target_properties(ggml-base PROPERTIES
     VERSION ${GGML_VERSION}
