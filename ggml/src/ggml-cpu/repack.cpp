@@ -4834,3 +4834,184 @@ ggml_backend_buffer_type_t ggml_backend_cpu_repack_buffer_type(void) {
 
     return &ggml_backend_cpu_buffer_type_repack;
 }
+
+// =============================================================
+// I2_S optimized mul_mat — intercepts I2_S ops from ANY buffer
+// Uses the same chunk-stealing dispatch as the repack template
+// but with I2_S-specific quantization and post-processing.
+// =============================================================
+
+#include "ggml-cpu-i2s.h"
+#include "ggml-quants.h"
+
+namespace ggml::cpu::i2s {
+
+class tensor_traits_i2s : public ggml::cpu::tensor_traits {
+  public:
+    bool work_size(int /* n_threads */, const struct ggml_tensor * op, size_t & size) override {
+        if (op->op != GGML_OP_MUL_MAT) return false;
+        if (!op->src[0] || op->src[0]->type != GGML_TYPE_I2_S) return false;
+        // I8_S quantized activations + act_scales + act_sums
+        const int64_t ne10 = op->src[1]->ne[0];
+        const int64_t ne11 = op->src[1]->ne[1];
+        const int64_t ne12 = op->src[1]->ne[2];
+        size = ne12 * (ne11 * ne10 * sizeof(int8_t)    // I8_S data
+                     + ne11 * sizeof(float)             // act_scales
+                     + ne11 * sizeof(int32_t));          // act_sums
+        return true;
+        return true;
+    }
+
+    bool compute_forward(struct ggml_compute_params * params, struct ggml_tensor * op) override {
+        if (op->op != GGML_OP_MUL_MAT) return false;
+        if (op->src[0]->type != GGML_TYPE_I2_S) return false;
+
+        const ggml_tensor * src0 = op->src[0];
+        const ggml_tensor * src1 = op->src[1];
+        ggml_tensor *       dst  = op;
+
+        GGML_TENSOR_BINARY_OP_LOCALS
+
+        const int ith = params->ith;
+        const int nth = params->nth;
+
+        GGML_ASSERT(src0->type == GGML_TYPE_I2_S);
+        GGML_ASSERT(src1->type == GGML_TYPE_F32);
+        GGML_ASSERT(nb0 == sizeof(float));
+        GGML_ASSERT(ne03 == 1 && ne13 == 1);
+        GGML_ASSERT(ggml_n_dims(src0) == 2);
+        GGML_ASSERT(params->wdata != NULL);
+
+        char * wdata = (char *)params->wdata;
+        const int64_t i8s_row_size = ne10;
+        const int64_t plane_wdata_size = ne11 * i8s_row_size
+                                       + ne11 * (int64_t)sizeof(float)
+                                       + ne11 * (int64_t)sizeof(int32_t);
+
+        // Phase 1: Quantize F32 activations → I8_S (multithreaded by rows)
+        for (int64_t i12 = 0; i12 < ne12; i12++) {
+            char    * pw         = wdata + i12 * plane_wdata_size;
+            float   * act_scales = (float *)  (pw + ne11 * i8s_row_size);
+            int32_t * act_sums   = (int32_t *)((char *)act_scales + ne11 * sizeof(float));
+
+            for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
+                quantize_row_i8_s(
+                    (const float *)((const char *)src1->data + i12 * nb12 + i11 * nb11),
+                    (void *)(pw + i11 * i8s_row_size),
+                    ne10, act_scales + i11, act_sums + i11);
+            }
+        }
+
+        ggml_barrier(params->threadpool);
+
+        // Phase 2: Static-split GEMM — each thread gets a contiguous range of A rows
+        const float   ws = *(const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
+        const int64_t a_row_bytes = ne00 / 4;
+
+        const int64_t ALIGN = 4;
+        int64_t src0_start = (ith * ne01) / nth;
+        int64_t src0_end   = ((ith + 1) * ne01) / nth;
+        // Align to 4-row boundary
+        src0_start = (src0_start / ALIGN) * ALIGN;
+        src0_end   = ((src0_end + ALIGN - 1) / ALIGN) * ALIGN;
+        src0_end   = MIN(src0_end, ne01);
+        if (src0_start >= src0_end) return true;
+
+        const int64_t n_rows = src0_end - src0_start;
+        float * tmp = (float *)alloca(n_rows * 4 * sizeof(float));
+
+        for (int64_t i12 = 0; i12 < ne12; i12++) {
+            char    * pw         = wdata + i12 * plane_wdata_size;
+            float   * act_scales = (float *)  (pw + ne11 * i8s_row_size);
+            int32_t * act_sums   = (int32_t *)((char *)act_scales + ne11 * sizeof(float));
+
+            const char * weight_data = (const char *)src0->data + src0_start * a_row_bytes;
+
+            // GEMM: 4 B columns at a time
+            const int64_t n_gemm_cols = ne11 - ne11 % 4;
+            for (int64_t col_start = 0; col_start < n_gemm_cols; col_start += 4) {
+                ggml_gemm_i2_i8_s(ne00, tmp, n_rows,
+                    weight_data,
+                    pw + col_start * i8s_row_size,
+                    4, n_rows);
+
+                for (int64_t col = 0; col < 4; col++) {
+                    float * dst_ptr = (float *)((char *)dst->data + (col_start + col) * nb1 + i12 * nb2) + src0_start;
+                    const float post_scale = ws / act_scales[col_start + col];
+                    const int32_t asum = act_sums[col_start + col];
+                    for (int64_t row = 0; row < n_rows; row++) {
+                        dst_ptr[row] = (tmp[col * n_rows + row] - asum) * post_scale;
+                    }
+                }
+            }
+
+            // GEMV: remaining columns
+            for (int64_t col = n_gemm_cols; col < ne11; col++) {
+                ggml_gemv_i2_i8_s(ne00, tmp, ne01,
+                    weight_data,
+                    pw + col * i8s_row_size,
+                    1, n_rows);
+
+                float * dst_ptr = (float *)((char *)dst->data + col * nb1 + i12 * nb2) + src0_start;
+                const float post_scale = ws / act_scales[col];
+                const int32_t asum = act_sums[col];
+                for (int64_t row = 0; row < n_rows; row++) {
+                    dst_ptr[row] = (tmp[row] - asum) * post_scale;
+                }
+            }
+        }
+
+        return true;
+    }
+};
+
+// Singleton instance
+static tensor_traits_i2s i2s_traits;
+
+class extra_buffer_type_i2s : public ggml::cpu::extra_buffer_type {
+  public:
+    bool supports_op(ggml_backend_dev_t, const struct ggml_tensor * op) override {
+        if (op->op == GGML_OP_MUL_MAT
+            && op->src[0] && op->src[1]
+            && op->src[0]->type == GGML_TYPE_I2_S
+            && op->src[1]->type == GGML_TYPE_F32
+            && ggml_n_dims(op->src[0]) == 2
+            && op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1) {
+            return true;
+        }
+        return false;
+    }
+
+    ggml::cpu::tensor_traits * get_tensor_traits(const struct ggml_tensor * op) override {
+        if (op->op == GGML_OP_MUL_MAT
+            && op->src[0] && op->src[0]->type == GGML_TYPE_I2_S
+            && ggml_n_dims(op->src[0]) == 2) {
+            return &i2s_traits;
+        }
+        return nullptr;
+    }
+};
+
+}  // namespace ggml::cpu::i2s
+
+// Public function to get the I2_S extra buffer type
+ggml_backend_buffer_type_t ggml_backend_cpu_i2s_buffer_type(void) {
+    static ggml::cpu::i2s::extra_buffer_type_i2s i2s_extra;
+    static struct ggml_backend_buffer_type ggml_backend_cpu_buffer_type_i2s = {
+        /* .iface    = */ {
+                           /* .get_name         = */ [](ggml_backend_buffer_type_t) -> const char * { return "CPU_I2S"; },
+                           /* .alloc_buffer     = */ [](ggml_backend_buffer_type_t buft, size_t size) -> ggml_backend_buffer_t {
+                               return ggml_backend_buft_alloc_buffer(ggml_backend_cpu_buffer_type(), size);
+                               GGML_UNUSED(buft);
+                           },
+                           /* .get_alignment    = */ [](ggml_backend_buffer_type_t) -> size_t { return 64; },
+                           /* .get_max_size     = */ nullptr,
+                           /* .get_alloc_size   = */ nullptr,
+                           /* .is_host          = */ [](ggml_backend_buffer_type_t) -> bool { return true; },
+                           },
+        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_cpu_reg(), 0),
+        /* .context = */ &i2s_extra,
+    };
+
+    return &ggml_backend_cpu_buffer_type_i2s;
+}

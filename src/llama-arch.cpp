@@ -604,6 +604,13 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_MASKED_EMBD_ORDERING,                   "masked_embd_ordering" },
     { LLM_TENSOR_FC,                                     "fc" },
     { LLM_TENSOR_D2T,                                    "d2t" },
+    { LLM_TENSOR_ATTN_Q_NORM_IN,                         "blk.%d.attn_q_norm_in" },
+    { LLM_TENSOR_ATTN_K_NORM_IN,                         "blk.%d.attn_k_norm_in" },
+    { LLM_TENSOR_ATTN_V_NORM_IN,                         "blk.%d.attn_v_norm_in" },
+    { LLM_TENSOR_ATTN_OUT_NORM_IN,                       "blk.%d.attn_output_norm_in" },
+    { LLM_TENSOR_FFN_GATE_NORM_IN,                       "blk.%d.ffn_gate_norm_in" },
+    { LLM_TENSOR_FFN_UP_NORM_IN,                         "blk.%d.ffn_up_norm_in" },
+    { LLM_TENSOR_FFN_DOWN_NORM_IN,                       "blk.%d.ffn_down_norm_in" },
 };
 
 // declare information about the model weight tensors:
@@ -768,6 +775,13 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_ATTN_KV_A_NORM,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_ATTN_SUB_NORM,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_FFN_SUB_NORM,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_ATTN_Q_NORM_IN,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_ATTN_K_NORM_IN,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_ATTN_V_NORM_IN,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_ATTN_OUT_NORM_IN,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_FFN_GATE_NORM_IN,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_FFN_UP_NORM_IN,             {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
+    {LLM_TENSOR_FFN_DOWN_NORM_IN,           {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_DEC_ATTN_NORM,              {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_DEC_CROSS_ATTN_NORM,        {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
     {LLM_TENSOR_DEC_FFN_NORM,               {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},

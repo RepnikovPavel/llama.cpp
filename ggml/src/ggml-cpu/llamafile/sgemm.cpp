@@ -1348,6 +1348,150 @@ class tinyBLAS_Q0_ARM {
 };
 #endif // __ARM_FEATURE_DOTPROD
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// I2_S (2-bit ternary) MATRIX MULTIPLICATION
+// A: uint8_t weights (4 ternary values per byte), B: int8_t activations
+// Uses same register-tiling approach as tinyBLAS_Q0_AVX
+
+#if defined(__AVX2__)
+class tinyBLAS_I2S_AVX {
+  public:
+    tinyBLAS_I2S_AVX(int64_t k,
+                     const uint8_t *A, int64_t lda,
+                     const int8_t *B, int64_t ldb,
+                     float *C, int64_t ldc,
+                     int ith, int nth)
+        : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth) {
+    }
+
+    void matmul(int64_t m, int64_t n) {
+        mnpack(0, m, 0, n);
+    }
+
+  private:
+    void mnpack(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+        int64_t mc, nc, mp, np;
+        switch ((MIN(m - m0, 4) << 4) | MIN(n - n0, 4)) {
+        case 0x44: mc = 4; nc = 4; gemm<4, 4>(m0, m, n0, n); break;
+        case 0x43: mc = 4; nc = 3; gemm<4, 3>(m0, m, n0, n); break;
+        case 0x34: mc = 3; nc = 4; gemm<3, 4>(m0, m, n0, n); break;
+        case 0x33: mc = 3; nc = 3; gemm<3, 3>(m0, m, n0, n); break;
+        case 0x42: mc = 4; nc = 2; gemm<4, 2>(m0, m, n0, n); break;
+        case 0x24: mc = 2; nc = 4; gemm<2, 4>(m0, m, n0, n); break;
+        case 0x41: mc = 4; nc = 1; gemm<4, 1>(m0, m, n0, n); break;
+        case 0x14: mc = 1; nc = 4; gemm<1, 4>(m0, m, n0, n); break;
+        case 0x32: mc = 3; nc = 2; gemm<3, 2>(m0, m, n0, n); break;
+        case 0x23: mc = 2; nc = 3; gemm<2, 3>(m0, m, n0, n); break;
+        case 0x22: mc = 2; nc = 2; gemm<2, 2>(m0, m, n0, n); break;
+        case 0x31: mc = 3; nc = 1; gemm<3, 1>(m0, m, n0, n); break;
+        case 0x13: mc = 1; nc = 3; gemm<1, 3>(m0, m, n0, n); break;
+        case 0x21: mc = 2; nc = 1; gemm<2, 1>(m0, m, n0, n); break;
+        case 0x12: mc = 1; nc = 2; gemm<1, 2>(m0, m, n0, n); break;
+        case 0x11: mc = 1; nc = 1; gemm<1, 1>(m0, m, n0, n); break;
+        default: return;
+        }
+        mp = m0 + (m - m0) / mc * mc;
+        np = n0 + (n - n0) / nc * nc;
+        if (mp < m) mnpack(mp, m, n0, np);
+        if (np < n) mnpack(m0, m, np, n);
+    }
+
+    // RM rows of A × RN rows of B, tiled with register reuse
+    template <int RM, int RN>
+    NOINLINE void gemm(int64_t m0, int64_t m, int64_t n0, int64_t n) {
+        int64_t ytiles = (m - m0) / RM;
+        int64_t xtiles = (n - n0) / RN;
+        int64_t tiles = xtiles * ytiles;
+        int64_t duty = (tiles + nth - 1) / nth;
+        int64_t start = ith * duty;
+        int64_t end = start + duty;
+        if (end > tiles) end = tiles;
+
+        const __m256i mask_2bit = _mm256_set1_epi8(0x03);
+        const __m256i one16 = _mm256_set1_epi16(1);
+
+        // k is in elements; each 128 elements = 32 packed bytes for A
+        const int64_t nb = k / 128;  // number of 128-element blocks
+        const int64_t a_row_bytes = k / 4;
+
+        for (int64_t job = start; job < end; ++job) {
+            int64_t ii = m0 + job / xtiles * RM;
+            int64_t jj = n0 + job % xtiles * RN;
+
+            // RM × RN accumulators (int32)
+            __m256i acc[RM][RN];
+            for (int r = 0; r < RM; r++)
+                for (int c = 0; c < RN; c++)
+                    acc[r][c] = _mm256_setzero_si256();
+
+            // Walk through k in blocks of 128 elements
+            for (int64_t bl = 0; bl < nb; bl++) {
+                // Load and unpack RM rows of A (32 bytes each → 4×32 uint8)
+                __m256i a_vals[RM][4];
+                for (int r = 0; r < RM; r++) {
+                    const uint8_t * a_ptr = A + (ii + r) * a_row_bytes + bl * 32;
+                    __m256i packed = _mm256_loadu_si256((const __m256i *)a_ptr);
+                    a_vals[r][0] = _mm256_and_si256(_mm256_srli_epi16(packed, 6), mask_2bit);
+                    a_vals[r][1] = _mm256_and_si256(_mm256_srli_epi16(packed, 4), mask_2bit);
+                    a_vals[r][2] = _mm256_and_si256(_mm256_srli_epi16(packed, 2), mask_2bit);
+                    a_vals[r][3] = _mm256_and_si256(packed, mask_2bit);
+                }
+
+                // Load RN rows of B (128 bytes each = 4×32 int8)
+                // and accumulate dot products with register reuse
+                for (int c = 0; c < RN; c++) {
+                    const int8_t * b_ptr = B + (jj + c) * ldb + bl * 128;
+                    __m256i b0 = _mm256_loadu_si256((const __m256i *)(b_ptr));
+                    __m256i b1 = _mm256_loadu_si256((const __m256i *)(b_ptr + 32));
+                    __m256i b2 = _mm256_loadu_si256((const __m256i *)(b_ptr + 64));
+                    __m256i b3 = _mm256_loadu_si256((const __m256i *)(b_ptr + 96));
+
+                    // Each A row reuses the same B loads
+                    for (int r = 0; r < RM; r++) {
+#if defined(__AVXVNNI__) || (defined(__AVX512VNNI__) && defined(__AVX512VL__))
+                        // VNNI: u8 * i8 → i32 accumulate in single instruction
+                        acc[r][c] = _mm256_dpbusd_epi32(acc[r][c], a_vals[r][0], b0);
+                        acc[r][c] = _mm256_dpbusd_epi32(acc[r][c], a_vals[r][1], b1);
+                        acc[r][c] = _mm256_dpbusd_epi32(acc[r][c], a_vals[r][2], b2);
+                        acc[r][c] = _mm256_dpbusd_epi32(acc[r][c], a_vals[r][3], b3);
+#else
+                        __m256i d0 = _mm256_maddubs_epi16(a_vals[r][0], b0);
+                        __m256i d1 = _mm256_maddubs_epi16(a_vals[r][1], b1);
+                        __m256i d2 = _mm256_maddubs_epi16(a_vals[r][2], b2);
+                        __m256i d3 = _mm256_maddubs_epi16(a_vals[r][3], b3);
+                        __m256i sum = _mm256_add_epi16(_mm256_add_epi16(d0, d1),
+                                                       _mm256_add_epi16(d2, d3));
+                        acc[r][c] = _mm256_add_epi32(acc[r][c],
+                                                      _mm256_madd_epi16(sum, one16));
+#endif
+                    }
+                }
+            }
+
+            // Horizontal sum and store
+            for (int r = 0; r < RM; r++) {
+                for (int c = 0; c < RN; c++) {
+                    __m128i sum128 = _mm_add_epi32(
+                        _mm256_castsi256_si128(acc[r][c]),
+                        _mm256_extractf128_si256(acc[r][c], 1));
+                    __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
+                    __m128i sum64 = _mm_add_epi32(hi64, sum128);
+                    __m128i hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+                    C[ldc * (jj + c) + (ii + r)] = (float)_mm_cvtsi128_si32(
+                        _mm_add_epi32(sum64, hi32));
+                }
+            }
+        }
+    }
+
+    const uint8_t *A;
+    const int8_t *B;
+    float *C;
+    int64_t k, lda, ldb, ldc;
+    int ith, nth;
+};
+#endif // __AVX2__
+
 #if defined(__AVX2__) || defined(__AVX512F__) || defined(__AVX__)
 template <typename TA, typename TB, typename TC>
 class tinyBLAS_Q0_AVX {
@@ -4023,6 +4167,22 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
         tinyBLAS_Q0_AVX<block_iq4_nl, block_q8_0, float> tb{
             k, (const block_iq4_nl *)A, lda,
             (const block_q8_0 *)B, ldb,
+            (float *)C, ldc,
+            params->ith, params->nth};
+        tb.matmul(m, n);
+        return true;
+#else
+        return false;
+#endif
+    }
+
+    case GGML_TYPE_I2_S: {
+        if (Btype != GGML_TYPE_I8_S)
+            return false;
+#if defined(__AVX2__)
+        tinyBLAS_I2S_AVX tb{
+            k, (const uint8_t *)A, lda,
+            (const int8_t *)B, ldb,
             (float *)C, ldc,
             params->ith, params->nth};
         tb.matmul(m, n);

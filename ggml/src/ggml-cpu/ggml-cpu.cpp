@@ -67,6 +67,12 @@ std::vector<ggml_backend_buffer_type_t> & ggml_backend_cpu_get_extra_buffer_type
         }
 #endif
 
+        // I2_S optimized mul_mat — available but tinyBLAS VNNI path is faster
+        // Uncomment to use the standalone GEMM path instead of tinyBLAS
+        //if (ggml_backend_cpu_i2s_buffer_type()) {
+        //    bufts.push_back(ggml_backend_cpu_i2s_buffer_type());
+        //}
+
         return bufts;
     }();
 

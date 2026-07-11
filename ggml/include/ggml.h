@@ -423,17 +423,15 @@ extern "C" {
         // GGML_TYPE_Q4_0_8_8 = 33,
         GGML_TYPE_TQ1_0   = 34,
         GGML_TYPE_TQ2_0   = 35,
-        // GGML_TYPE_IQ4_NL_4_4 = 36,
-        // GGML_TYPE_IQ4_NL_4_8 = 37,
-        // GGML_TYPE_IQ4_NL_8_8 = 38,
+        GGML_TYPE_I2_S    = 36,
+        GGML_TYPE_I8_S    = 37,
+        GGML_TYPE_TL1     = 38,
+        // GGML_TYPE_IQ4_NL_8_8 = 38, // reserved, now used by TL1
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_I2_S    = 42,
-        GGML_TYPE_I8_S    = 43,
-        GGML_TYPE_TL1     = 44,
-        GGML_TYPE_TL2     = 45,
-        GGML_TYPE_COUNT   = 46,
+        GGML_TYPE_TL2     = 42,
+        GGML_TYPE_COUNT   = 43,
     };
 
     // precision

@@ -1286,3 +1286,224 @@ void quantize_row_iq4_xs(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, 
     assert(k % QK_K == 0);
     quantize_iq4_xs(x, y, 1, k, NULL);
 }
+
+// ====================== BitNet I2_S AVX2 SIMD vec_dot ======================
+// ====================== BitNet I2_S quantization functions ======================
+
+#if defined(__AVX2__) || defined(__AVX512F__)
+#define QK_I2_S 128
+#elif defined(__ARM_NEON)
+#define QK_I2_S 64
+#else
+#define QK_I2_S 128
+#endif
+
+#if defined(__AVX2__)
+static inline int hsum_i32_8(const __m256i a) {
+    const __m128i sum128 = _mm_add_epi32(_mm256_castsi256_si128(a), _mm256_extractf128_si256(a, 1));
+    const __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
+    const __m128i sum64 = _mm_add_epi32(hi64, sum128);
+    const __m128i hi32  = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
+    return _mm_cvtsi128_si32(_mm_add_epi32(sum64, hi32));
+}
+#endif
+
+void quantize_row_i8_s(const float * x, void * y, int64_t n, float* act_scales, int32_t* act_sums) {
+    float amax = 0.0f;
+    for (int i = 0; i < n; i++) {
+        amax = MAX(amax, fabsf(x[i]));
+    }
+    float s = (amax > 0.0f) ? 127.0f / amax : 0.0f;
+    act_scales[0] = s;
+
+    int32_t sum = 0;
+    int8_t * dst = (int8_t *)y;
+    for (int i = 0; i < n; i++) {
+        int v = (int)roundf(x[i] * s);
+        if (v >  127) v =  127;
+        if (v < -128) v = -128;
+        dst[i] = (int8_t)v;
+        sum += v;
+    }
+    act_sums[0] = sum;
+}
+
+void quantize_row_i8_s_4x1(const float * x, void * y, int64_t n, float* act_scales, int32_t* act_sums) {
+    quantize_row_i8_s(x, y, n, act_scales, act_sums);
+}
+
+void dequantize_row_i2_s(const uint8_t * x, float * y, int64_t n, const float i2_scale) {
+    static const float map2bit[4] = { -1.0f, 0.0f, 1.0f, 0.0f };
+    int64_t done = 0;
+    while (done < n) {
+        int64_t cols0 = MIN(32, n - done - 0*32);
+        int64_t cols1 = MIN(32, n - done - 1*32);
+        int64_t cols2 = MIN(32, n - done - 2*32);
+        int64_t cols3 = MIN(32, n - done - 3*32);
+        for (int gp = 0; gp < 32; gp++) {
+            uint8_t byte = x[(done/4) + gp];
+            uint8_t c0 = (byte >> 6) & 0x03;
+            uint8_t c1 = (byte >> 4) & 0x03;
+            uint8_t c2 = (byte >> 2) & 0x03;
+            uint8_t c3 = (byte >> 0) & 0x03;
+            if (gp < cols0) y[done + 0*32 + gp] = i2_scale * map2bit[c0];
+            if (gp < cols1) y[done + 1*32 + gp] = i2_scale * map2bit[c1];
+            if (gp < cols2) y[done + 2*32 + gp] = i2_scale * map2bit[c2];
+            if (gp < cols3) y[done + 3*32 + gp] = i2_scale * map2bit[c3];
+        }
+        done += 128;
+    }
+}
+
+size_t quantize_i2_s(const float * src, void * dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
+    (void)quant_weights;
+    int64_t n = nrow * n_per_row;
+
+    double max = 0.0;
+    for (int64_t i = 0; i < n; i++) {
+        double v = fabs((double)src[i]);
+        if (v > max) { max = v; break; }  // first nonzero abs as scale (BitNet convention)
+    }
+
+    uint8_t * q = (uint8_t *)dst;
+    memset(q, 0, n / 4);
+
+    for (int64_t i = 0; i < n; i++) {
+        uint8_t val;
+        if (fabs((double)src[i]) < 1e-6) {
+            val = 1; // maps to 0
+        } else {
+            val = ((double)src[i] * max > 0) ? 2 : 0; // maps to +1 or -1
+        }
+        int byte_idx = i / 4;
+        int bit_pos = 6 - 2 * (i % 4);
+        q[byte_idx] |= (val << bit_pos);
+    }
+
+    float * scale_ptr = (float *)(q + n / 4);
+    scale_ptr[0] = (float)max;
+
+    return nrow * n_per_row / 4 + 32;
+}
+
+
+static void ggml_vec_dot_i2_i8_s_1x1(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+#if defined(__AVX2__)
+    const uint8_t *    x = (uint8_t *)vx;
+    const int8_t  *    y = (int8_t *)vy;
+
+    const int nb = n / QK_I2_S;
+    const int group32_num = nb / 32;
+    const int la_num = nb % 32;
+    const int groupla_num = nb % 32 != 0 ? 1 : 0;
+    
+    __m256i mask = _mm256_set1_epi8(0x03);
+    __m256i one16 = _mm256_set1_epi16(1);
+
+    // 处理多行，nrc表示要处理的行数
+    for (int row = 0; row < nrc; row++) {
+        __m256i accu = _mm256_setzero_si256();
+        
+        // 计算当前行的x指针偏移
+        const uint8_t * x_row = x + row * bx / 4;
+        
+        for (int i = 0; i < group32_num; i++) {
+            const uint8_t *px = x_row + i * 1024;     // 32 * 32
+            const int8_t  *py = y + i * 4096;         // 32 * 128
+            __m256i accu32 = _mm256_setzero_si256();
+            
+            for (int j = 0; j < 32; j++) {
+                // 128 index
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(px));
+                __m256i xq8_2 = _mm256_srli_epi16(xq8_3, 2);
+                __m256i xq8_1 = _mm256_srli_epi16(xq8_3, 4);
+                __m256i xq8_0 = _mm256_srli_epi16(xq8_3, 6);
+
+                // each 32 index
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+                xq8_2 = _mm256_and_si256(xq8_2, mask);
+                xq8_1 = _mm256_and_si256(xq8_1, mask);
+                xq8_0 = _mm256_and_si256(xq8_0, mask);
+
+                // each 32 index
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(py));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(py + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(py + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(py + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                accu32 = _mm256_add_epi16(accu32, _mm256_add_epi16(xq8_0, xq8_1));
+                accu32 = _mm256_add_epi16(accu32, _mm256_add_epi16(xq8_2, xq8_3));
+
+                px += 32;
+                py += 128;
+            }
+            accu = _mm256_add_epi32(_mm256_madd_epi16(accu32, one16), accu);
+        }
+
+        for (int i = 0; i < groupla_num; i++) {
+            __m256i accula = _mm256_setzero_si256();
+            const uint8_t *px = x_row + group32_num * 1024; // 32 * 32
+            const int8_t  *py = y + group32_num * 4096;     // 32 * 128
+            
+            for (int j = 0; j < la_num; j++) {
+                // 128 index
+                __m256i xq8_3 = _mm256_loadu_si256((const __m256i*)(px));
+                __m256i xq8_2 = _mm256_srli_epi16(xq8_3, 2);
+                __m256i xq8_1 = _mm256_srli_epi16(xq8_3, 4);
+                __m256i xq8_0 = _mm256_srli_epi16(xq8_3, 6);
+
+                // each 32 index
+                xq8_3 = _mm256_and_si256(xq8_3, mask);
+                xq8_2 = _mm256_and_si256(xq8_2, mask);
+                xq8_1 = _mm256_and_si256(xq8_1, mask);
+                xq8_0 = _mm256_and_si256(xq8_0, mask);
+
+                // each 32 index
+                __m256i yq8_0 = _mm256_loadu_si256((const __m256i*)(py));
+                __m256i yq8_1 = _mm256_loadu_si256((const __m256i*)(py + 32));
+                __m256i yq8_2 = _mm256_loadu_si256((const __m256i*)(py + 64));
+                __m256i yq8_3 = _mm256_loadu_si256((const __m256i*)(py + 96));
+
+                xq8_0 = _mm256_maddubs_epi16(xq8_0, yq8_0);
+                xq8_1 = _mm256_maddubs_epi16(xq8_1, yq8_1);
+                xq8_2 = _mm256_maddubs_epi16(xq8_2, yq8_2);
+                xq8_3 = _mm256_maddubs_epi16(xq8_3, yq8_3);
+
+                accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_0, xq8_1));
+                accula = _mm256_add_epi16(accula, _mm256_add_epi16(xq8_2, xq8_3));
+
+                px += 32;
+                py += 128;
+            }
+            accu = _mm256_add_epi32(accu, _mm256_madd_epi16(accula, one16));
+        }
+        
+        int sumi = hsum_i32_8(accu);
+        s[row] = (float)sumi;
+    }
+#else
+    // Scalar fallback
+    const uint8_t * x = (const uint8_t *)vx;
+    const int8_t * y  = (const int8_t *)vy;
+    static const int map2bit[4] = { -1, 0, 1, 0 };
+    for (int row = 0; row < nrc; row++) {
+        int32_t sum = 0;
+        for (int i = 0; i < n; i++) {
+            int byte_idx = i / 4;
+            int bit_pos = 6 - 2 * (i % 4);
+            int w = map2bit[(x[row * (n/4) + byte_idx] >> bit_pos) & 0x03];
+            sum += w * y[i];
+        }
+        s[row] = (float)sum;
+    }
+#endif
+}
+
+void ggml_vec_dot_i2_i8_s(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+    ggml_vec_dot_i2_i8_s_1x1(n, s, bs, vx, bx, vy, by, nrc);
+}

@@ -490,6 +490,7 @@ class MODEL_ARCH(IntEnum):
     GLM_DSA          = auto()
     BITNET           = auto()
     BITNET_B158      = auto()
+    BITNET_25        = auto()
     T5               = auto()
     T5ENCODER        = auto()
     JAIS             = auto()
@@ -557,8 +558,6 @@ class VISION_PROJECTOR_TYPE(IntEnum):
     QWEN3VL   = auto()
     STEP3VL   = auto()
     COGVLM    = auto()
-    BITNET       = auto()
-    BITNET_25    = auto()
 
 
 class MODEL_TENSOR(IntEnum):
@@ -1569,8 +1568,6 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM:    "blk.{bid}.nextn.shared_head_norm",
     MODEL_TENSOR.FC:                        "fc",
     MODEL_TENSOR.D2T:                       "d2t",
-    BITNET     = auto()
-    MODEL_ARCH.BITNET:         "bitnet",
 }
 
 MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
@@ -4588,10 +4585,10 @@ class GGMLQuantizationType(IntEnum):
     MXFP4   = 39
     NVFP4   = 40
     Q1_0    = 41
-    I2_S    = 42
-    I8_S    = 43
-    TL1     = 44
-    TL2     = 45
+    I2_S    = 36
+    I8_S    = 37
+    TL1     = 38
+    TL2     = 42
 
 
 class ExpertGatingFuncType(IntEnum):

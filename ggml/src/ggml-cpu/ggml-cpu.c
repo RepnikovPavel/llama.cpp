@@ -14,6 +14,7 @@
 #include "ops.h"
 #include "ggml.h"
 #include "ggml-quants.h"
+#include "ggml-cpu-i2s.h"
 #include "common.h"
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
@@ -410,6 +411,11 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_I32] = {
         .from_float               = (ggml_from_float_t) ggml_cpu_fp32_to_i32,
+    },
+    [GGML_TYPE_I2_S] = {
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_i2_i8_s,
+        .vec_dot_type             = GGML_TYPE_I8_S,
+        .nrows                    = 1,
     },
 };
 
@@ -1207,6 +1213,53 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     // 16 * 2, accounting for mmla kernels
     float tmp[32];
 
+    // I2_S: weights are 2-bit packed (4 elements per byte), need special addressing and post-processing
+    if (src0->type == GGML_TYPE_I2_S) {
+        const float * scale      = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
+        const float * act_scales = (const float *)((const char *)wdata + (ne11 * ne10));
+        const int32_t * act_sums = (const int32_t *)((const char *)act_scales + ne11 * sizeof(float));
+
+        for (int64_t iir1 = ir1_start; iir1 < ir1_end; iir1 += blck_1) {
+            for (int64_t iir0 = ir0_start; iir0 < ir0_end; iir0 += blck_0) {
+                for (int64_t ir1 = iir1; ir1 < iir1 + blck_1 && ir1 < ir1_end; ++ir1) {
+                    const int64_t i13 = (ir1 / (ne12 * ne1));
+                    const int64_t i12 = (ir1 - i13 * ne12 * ne1) / ne1;
+                    const int64_t i11 = (ir1 - i13 * ne12 * ne1 - i12 * ne1);
+                    const int64_t i03 = i13 / r3;
+                    const int64_t i02 = i12 / r2;
+                    const int64_t i1 = i11;
+                    const int64_t i2 = i12;
+                    const int64_t i3 = i13;
+
+                    const char * src0_row = (const char *)src0->data + (i02 * nb02 + i03 * nb03);
+                    const char * src1_col_de = (const char *)wdata + (i11 * nb11 / 4);
+                    float * dst_col = (float *)((char *)dst->data + (i1 * nb1 + i2 * nb2 + i3 * nb3));
+
+                    if (iir0 + blck_0 - 1 < ir0_end) {
+                        // Fast path: process 16 rows at once
+                        vec_dot(ne00, &tmp[0], 1,
+                            src0_row + iir0 * nb01 / 4, nb01,
+                            src1_col_de, 0, 16);
+                        for (int row = 0; row < 16; row++) {
+                            tmp[row] = (tmp[row] - act_sums[i1]) / (act_scales[i1]) * (*scale);
+                        }
+                    } else {
+                        // Slow path: process rows one by one
+                        for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ++ir0) {
+                            vec_dot(ne00, &tmp[ir0 - iir0], 0,
+                                src0_row + ir0 * nb01 / 4, 0,
+                                src1_col_de, 0, 1);
+                            tmp[ir0 - iir0] = (tmp[ir0 - iir0] - act_sums[i1]) / (act_scales[i1]) * (*scale);
+                        }
+                    }
+
+                    memcpy(&dst_col[iir0], tmp, (MIN(iir0 + blck_0, ir0_end) - iir0) * sizeof(float));
+                }
+            }
+        }
+        return;
+    }
+
     for (int64_t iir1 = ir1_start; iir1 < ir1_end; iir1 += blck_1) {
         for (int64_t iir0 = ir0_start; iir0 < ir0_end; iir0 += blck_0) {
             for (int64_t ir1 = iir1; ir1 < iir1 + blck_1 && ir1 < ir1_end; ir1 += num_rows_per_vec_dot) {
@@ -1359,14 +1412,16 @@ UseGgmlGemm1:;
     #else
         for (int64_t i13 = 0; i13 < ne13; ++i13) {
             for (int64_t i12 = 0; i12 < ne12; ++i12) {
-                for (int64_t i11 = 0; i11 < ne11; ++i11) {
-                    if (src0->type == GGML_TYPE_I2_S) {
-                        // I2_S: use specialized i8_s quantization with activation scaling
+                if (src0->type == GGML_TYPE_I2_S) {
+                    // I2_S: distribute rows across threads (each row needs full-row amax/sum)
+                    for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
                         quantize_row_i8_s(
                             (float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11),
                             (void *) (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1),
                             ne10, act_scales + i11, act_sums + i11);
-                    } else {
+                    }
+                } else {
+                    for (int64_t i11 = 0; i11 < ne11; ++i11) {
                         size_t bs = ggml_blck_size(vec_dot_type);
                         int64_t ne10_block_start = (ith * ne10/bs) / nth;
                         int64_t ne10_block_end   = ((ith + 1) * ne10/bs) / nth;
@@ -1406,10 +1461,87 @@ UseGgmlGemm1:;
                                      vec_dot_type,
                                      dst->type))
                     goto UseGgmlGemm2;
+
+        // I2_S post-processing: apply act_scales/act_sums/weight_scale after sgemm
+        if (src0->type == GGML_TYPE_I2_S) {
+            const float * scale = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
+            const float * i2s_act_scales = (const float *)((const char *)wdata + (ne11 * ne10));
+            const int32_t * i2s_act_sums = (const int32_t *)((const char *)i2s_act_scales + ne11 * sizeof(float));
+            // Distribute rows across threads
+            for (int64_t j = params->ith; j < ne11; j += params->nth) {
+                float * dst_row = (float *)((char *)dst->data + j * nb1);
+                for (int64_t i = 0; i < ne01; i++) {
+                    dst_row[i] = (dst_row[i] - i2s_act_sums[j]) / i2s_act_scales[j] * (*scale);
+                }
+            }
+        }
         return;
     }
 UseGgmlGemm2:;
 #endif
+
+    // I2_S GEMV/GEMM fast path: use optimized SIMD kernels for 2D weight matrices
+    if (src0->type == GGML_TYPE_I2_S && ggml_n_dims(src0) == 2) {
+        const void * src1_wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
+        const size_t i2s_row_size = ggml_row_size(vec_dot_type, ne10);
+        const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? i2s_row_size : nb11;
+
+        const int64_t matmul_num_cols = 4; // gemm processes 4 columns at a time
+        int64_t src0_start = (ith * ne01) / nth;
+        int64_t src0_end   = ((ith + 1) * ne01) / nth;
+        // align to matmul_num_cols boundary
+        src0_start = (src0_start % matmul_num_cols) ? src0_start + matmul_num_cols - (src0_start % matmul_num_cols) : src0_start;
+        src0_end   = (src0_end   % matmul_num_cols) ? src0_end   + matmul_num_cols - (src0_end   % matmul_num_cols) : src0_end;
+        if (src0_start >= src0_end) return;
+
+        const float * scale      = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
+        const float * act_scales = (const float *)((const char *)src1_wdata + (ne11 * ne10));
+        const int32_t * act_sums = (const int32_t *)((const char *)act_scales + ne11 * sizeof(float));
+        const int64_t n_rows = src0_end - src0_start;
+        const float ws = *scale;
+
+        // GEMM path: process 4 columns at a time, write directly to destination
+        if (ne11 >= 4) {
+            const int64_t n_gemm_cols = ne11 - ne11 % 4;
+            // Use a small per-column temp buffer (only n_rows floats, not n_rows*n_cols)
+            float * tmp = (float *)alloca(n_rows * 4 * sizeof(float));
+
+            for (int64_t col_start = 0; col_start < n_gemm_cols; col_start += 4) {
+                ggml_gemm_i2_i8_s(ne00, tmp, n_rows,
+                    (const char *)src0->data + src0_start * nb01 / 4,
+                    (const char *)src1_wdata + src1_col_stride * col_start,
+                    4, n_rows);
+
+                for (int64_t col = 0; col < 4; col++) {
+                    float * dst_row = (float *)((char *)dst->data + (col_start + col) * nb1) + src0_start;
+                    const float post_scale = ws / act_scales[col_start + col];
+                    const int32_t asum = act_sums[col_start + col];
+                    for (int64_t row = 0; row < n_rows; row++) {
+                        dst_row[row] = (tmp[col * n_rows + row] - asum) * post_scale;
+                    }
+                }
+            }
+        }
+
+        // GEMV path: process remaining columns one by one
+        {
+            float * tmp = (float *)alloca(n_rows * sizeof(float));
+            for (int64_t iter = (ne11 >= 4 ? ne11 - ne11 % 4 : 0); iter < ne11; iter++) {
+                ggml_gemv_i2_i8_s(ne00, tmp, ne01,
+                    (const char *)src0->data + src0_start * nb01 / 4,
+                    (const char *)src1_wdata + src1_col_stride * iter,
+                    1, n_rows);
+
+                float * dst_row = (float *)((char *)dst->data + iter * nb1) + src0_start;
+                const float post_scale = ws / act_scales[iter];
+                const int32_t asum = act_sums[iter];
+                for (int64_t row = 0; row < n_rows; row++) {
+                    dst_row[row] = (tmp[row] - asum) * post_scale;
+                }
+            }
+        }
+        return;
+    }
 
     // This is the size of the first dimension of the result, so we can iterate that way. (see the ASSERT above, these are the same numbers)
     const int64_t nr0 = ne0;
