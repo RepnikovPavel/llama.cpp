@@ -3,6 +3,10 @@
 
 #include "ggml-backend.h"
 #include "ggml-impl.h"
+
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+#include "ggml-bitnet.h"
+#endif
 #include "ggml-threading.h"
 #include "ggml-cpu.h"
 #include "ggml.h"
@@ -1609,6 +1613,10 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
     if (is_first_call) {
         // initialize time system (required on Windows)
         ggml_time_init();
+
+#if defined(GGML_BITNET_ARM_TL1) || defined(GGML_BITNET_X86_TL2)
+        ggml_bitnet_init();
+#endif
 
         is_first_call = false;
     }
