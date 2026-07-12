@@ -64,11 +64,22 @@ void llama_model_gemma3::load_arch_tensors(llama_model_loader &) {
         layer.attn_k_norm    = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM,    "weight", i), {n_embd_head_k}, 0);
         layer.attn_q_norm    = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM,    "weight", i), {n_embd_head_k}, 0);
 
+        // BitNet per-projection norms (optional, for I2_S models)
+        layer.attn_q_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_Q_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_k_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_K_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_v_norm_in   = create_tensor(tn(LLM_TENSOR_ATTN_V_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.attn_out_norm_in = create_tensor(tn(LLM_TENSOR_ATTN_OUT_NORM_IN, "weight", i), {n_embd_head_k * n_head}, TENSOR_NOT_REQUIRED);
+
         layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
         layer.ffn_post_norm = create_tensor(tn(LLM_TENSOR_FFN_POST_NORM, "weight", i), {n_embd}, 0);
+
+        // BitNet per-projection norms for FFN (optional)
+        layer.ffn_gate_norm_in = create_tensor(tn(LLM_TENSOR_FFN_GATE_NORM_IN, "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.ffn_up_norm_in   = create_tensor(tn(LLM_TENSOR_FFN_UP_NORM_IN,   "weight", i), {n_embd}, TENSOR_NOT_REQUIRED);
+        layer.ffn_down_norm_in = create_tensor(tn(LLM_TENSOR_FFN_DOWN_NORM_IN, "weight", i), {n_ff},    TENSOR_NOT_REQUIRED);
     }
 }
 
@@ -126,9 +137,35 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
 
         // self-attention
         {
+            // BitNet per-projection norms before Q/K/V
+            ggml_tensor * q_inp = cur;
+            ggml_tensor * k_inp = cur;
+            ggml_tensor * v_inp = cur;
+
+            if (model.layers[il].attn_q_norm_in) {
+                q_inp = build_norm(cur, model.layers[il].attn_q_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(q_inp, "attn_q_norm_in", il);
+            }
+            if (model.layers[il].attn_k_norm_in) {
+                k_inp = build_norm(cur, model.layers[il].attn_k_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(k_inp, "attn_k_norm_in", il);
+            }
+            if (model.layers[il].attn_v_norm_in) {
+                v_inp = build_norm(cur, model.layers[il].attn_v_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(v_inp, "attn_v_norm_in", il);
+            }
+
             // compute Q and K and RoPE them
-            auto [Qcur, Kcur, Vcur] = build_qkv(model.layers[il], cur,
-                    n_embd_head, n_head, n_head_kv, il);
+            ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, q_inp, model.layers[il].wq_s);
+            cb(Qcur, "Qcur", il);
+            ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, k_inp, model.layers[il].wk_s);
+            cb(Kcur, "Kcur", il);
+            ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, v_inp, model.layers[il].wv_s);
+            cb(Vcur, "Vcur", il);
+
+            Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head, n_tokens);
+            Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+            Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
             Qcur = build_norm(Qcur, model.layers[il].attn_q_norm, NULL, LLM_NORM_RMS, il);
             cb(Qcur, "Qcur_normed", il);
@@ -153,9 +190,22 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
             // ref: https://github.com/google/gemma_pytorch/blob/014acb7ac4563a5f77c76d7ff98f31b568c16508/gemma/model.py#L315
             Qcur = ggml_scale(ctx0, Qcur, hparams.f_attention_scale);
 
-            cur = build_attn(inp_attn,
-                    model.layers[il].wo, NULL, model.layers[il].wo_s,
-                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+            if (model.layers[il].attn_out_norm_in) {
+                // BitNet per-projection norm for o_proj: attention without wo, then norm + wo
+                cur = build_attn(inp_attn,
+                        NULL, NULL, NULL,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+
+                cur = build_norm(cur, model.layers[il].attn_out_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(cur, "attn_out_norm_in", il);
+
+                cur = build_lora_mm(model.layers[il].wo, cur);
+                cb(cur, "attn_o_out", il);
+            } else {
+                cur = build_attn(inp_attn,
+                        model.layers[il].wo, NULL, model.layers[il].wo_s,
+                        Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, 1.0f, il);
+            }
         }
         if (il == n_layer - 1 && inp_out_ids) {
             cur  = ggml_get_rows(ctx0,  cur, inp_out_ids);
@@ -176,12 +226,40 @@ llama_model_gemma3::graph<iswa>::graph(const llama_model & model, const llm_grap
 
         // feed-forward network
         {
-            cur = build_ffn(cur,
-                    model.layers[il].ffn_up,   NULL, NULL,
-                    model.layers[il].ffn_gate, NULL, NULL,
-                    model.layers[il].ffn_down, NULL, NULL,
-                    NULL,
-                    LLM_FFN_GELU, LLM_FFN_PAR, il);
+            // BitNet per-projection norms for FFN
+            ggml_tensor * gate_inp = cur;
+            ggml_tensor * up_inp = cur;
+
+            if (model.layers[il].ffn_gate_norm_in) {
+                gate_inp = build_norm(cur, model.layers[il].ffn_gate_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(gate_inp, "ffn_gate_norm_in", il);
+            }
+            if (model.layers[il].ffn_up_norm_in) {
+                up_inp = build_norm(cur, model.layers[il].ffn_up_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(up_inp, "ffn_up_norm_in", il);
+            }
+
+            // gate and up projections (possibly with different inputs if norm_in exists)
+            ggml_tensor * ffn_gate_out = build_lora_mm(model.layers[il].ffn_gate, gate_inp);
+            cb(ffn_gate_out, "ffn_gate", il);
+            ggml_tensor * ffn_up_out = build_lora_mm(model.layers[il].ffn_up, up_inp);
+            cb(ffn_up_out, "ffn_up", il);
+
+            // GELU activation on gate
+            ffn_gate_out = ggml_gelu(ctx0, ffn_gate_out);
+            cb(ffn_gate_out, "ffn_gate_gelu", il);
+
+            // element-wise multiply
+            cur = ggml_mul(ctx0, ffn_gate_out, ffn_up_out);
+            cb(cur, "ffn_gate_up", il);
+
+            // down projection with optional norm_in
+            if (model.layers[il].ffn_down_norm_in) {
+                cur = build_norm(cur, model.layers[il].ffn_down_norm_in, NULL, LLM_NORM_RMS, il);
+                cb(cur, "ffn_down_norm_in", il);
+            }
+
+            cur = build_lora_mm(model.layers[il].ffn_down, cur);
             cb(cur, "ffn_out", il);
         }
         cur = build_norm(cur,
