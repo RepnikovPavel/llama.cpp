@@ -1464,6 +1464,10 @@ UseGgmlGemm1:;
 
         // I2_S post-processing: apply act_scales/act_sums/weight_scale after sgemm
         if (src0->type == GGML_TYPE_I2_S) {
+            // Barrier needed: tinyBLAS distributes tiles across threads, so a single
+            // output column's rows may be written by different threads. All threads
+            // must finish sgemm before any thread starts post-processing.
+            ggml_barrier(params->threadpool);
             const float * scale = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
             const float * i2s_act_scales = (const float *)((const char *)wdata + (ne11 * ne10));
             const int32_t * i2s_act_sums = (const int32_t *)((const char *)i2s_act_scales + ne11 * sizeof(float));

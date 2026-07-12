@@ -356,7 +356,15 @@ class GGUFReader:
             else:
                 item_count = n_bytes
                 item_type = np.uint8
-                np_dims = quant_shape_to_byte_shape(np_dims, ggml_type)
+                # I2_S/TL1/TL2: packed data with appended metadata, actual byte count
+                # differs from computed n_bytes. Use raw flat array without reshape.
+                if ggml_type in (GGMLQuantizationType.I2_S, GGMLQuantizationType.TL1, GGMLQuantizationType.TL2):
+                    # Compute actual bytes: n_elems/4 (2-bit packed) + 32 (scale + alignment)
+                    actual_bytes = n_elems // 4 + 32
+                    item_count = actual_bytes
+                    np_dims = (actual_bytes,)
+                else:
+                    np_dims = quant_shape_to_byte_shape(np_dims, ggml_type)
             tensors.append(ReaderTensor(
                 name = tensor_name,
                 tensor_type = ggml_type,
