@@ -1447,6 +1447,27 @@ UseGgmlGemm1:;
         const void* wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
         const size_t row_size = ggml_row_size(vec_dot_type, ne10);
 
+        // I2_S: use fused sgemm with inline post-processing (no barrier needed)
+        if (src0->type == GGML_TYPE_I2_S) {
+            const float * scale = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
+            const float * i2s_act_scales = (const float *)((const char *)wdata + (ne11 * ne10));
+            const int32_t * i2s_act_sums = (const int32_t *)((const char *)i2s_act_scales + ne11 * sizeof(float));
+
+            for (int64_t i13 = 0; i13 < ne13; i13++)
+                for (int64_t i12 = 0; i12 < ne12; i12++)
+                    if (!llamafile_sgemm_i2s(params,
+                                             ne01, ne11, ne00,
+                                             (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
+                                             nb01/ggml_type_size(src0->type),
+                                             (const char *)wdata + (i12*ne11 + i13*ne12*ne11)*row_size,
+                                             row_size/ggml_type_size(vec_dot_type),
+                                             (char *)dst->data + i12*nb2 + i13*nb3,
+                                             nb1/ggml_type_size(dst->type),
+                                             i2s_act_scales, i2s_act_sums, *scale))
+                        goto UseGgmlGemm2;
+            return;
+        }
+
         for (int64_t i13 = 0; i13 < ne13; i13++)
             for (int64_t i12 = 0; i12 < ne12; i12++)
                 if (!llamafile_sgemm(params,
@@ -1462,23 +1483,6 @@ UseGgmlGemm1:;
                                      dst->type))
                     goto UseGgmlGemm2;
 
-        // I2_S post-processing: apply act_scales/act_sums/weight_scale after sgemm
-        if (src0->type == GGML_TYPE_I2_S) {
-            // Barrier needed: tinyBLAS distributes tiles across threads, so a single
-            // output column's rows may be written by different threads. All threads
-            // must finish sgemm before any thread starts post-processing.
-            ggml_barrier(params->threadpool);
-            const float * scale = (const float *)((const uint8_t *)src0->data + (ne00 * ne01 / 4));
-            const float * i2s_act_scales = (const float *)((const char *)wdata + (ne11 * ne10));
-            const int32_t * i2s_act_sums = (const int32_t *)((const char *)i2s_act_scales + ne11 * sizeof(float));
-            // Distribute rows across threads
-            for (int64_t j = params->ith; j < ne11; j += params->nth) {
-                float * dst_row = (float *)((char *)dst->data + j * nb1);
-                for (int64_t i = 0; i < ne01; i++) {
-                    dst_row[i] = (dst_row[i] - i2s_act_sums[j]) / i2s_act_scales[j] * (*scale);
-                }
-            }
-        }
         return;
     }
 UseGgmlGemm2:;

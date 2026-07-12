@@ -1360,8 +1360,12 @@ class tinyBLAS_I2S_AVX {
                      const uint8_t *A, int64_t lda,
                      const int8_t *B, int64_t ldb,
                      float *C, int64_t ldc,
-                     int ith, int nth)
-        : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth) {
+                     int ith, int nth,
+                     const float *act_scales = nullptr,
+                     const int32_t *act_sums = nullptr,
+                     float weight_scale = 0.0f)
+        : A(A), B(B), C(C), k(k), lda(lda), ldb(ldb), ldc(ldc), ith(ith), nth(nth),
+          act_scales(act_scales), act_sums(act_sums), weight_scale(weight_scale) {
     }
 
     void matmul(int64_t m, int64_t n) {
@@ -1468,7 +1472,7 @@ class tinyBLAS_I2S_AVX {
                 }
             }
 
-            // Horizontal sum and store
+            // Horizontal sum, post-process, and store
             for (int r = 0; r < RM; r++) {
                 for (int c = 0; c < RN; c++) {
                     __m128i sum128 = _mm_add_epi32(
@@ -1477,8 +1481,12 @@ class tinyBLAS_I2S_AVX {
                     __m128i hi64 = _mm_unpackhi_epi64(sum128, sum128);
                     __m128i sum64 = _mm_add_epi32(hi64, sum128);
                     __m128i hi32 = _mm_shuffle_epi32(sum64, _MM_SHUFFLE(2, 3, 0, 1));
-                    C[ldc * (jj + c) + (ii + r)] = (float)_mm_cvtsi128_si32(
+                    float dot = (float)_mm_cvtsi128_si32(
                         _mm_add_epi32(sum64, hi32));
+                    if (act_scales) {
+                        dot = (dot - act_sums[jj + c]) * (weight_scale / act_scales[jj + c]);
+                    }
+                    C[ldc * (jj + c) + (ii + r)] = dot;
                 }
             }
         }
@@ -1489,6 +1497,9 @@ class tinyBLAS_I2S_AVX {
     float *C;
     int64_t k, lda, ldb, ldc;
     int ith, nth;
+    const float *act_scales;
+    const int32_t *act_sums;
+    float weight_scale;
 };
 #endif // __AVX2__
 
@@ -4209,4 +4220,24 @@ bool llamafile_sgemm(const struct ggml_compute_params * params, int64_t m, int64
     (void)Atype;
     (void)Btype;
     (void)Ctype;
+}
+
+bool llamafile_sgemm_i2s(const struct ggml_compute_params * params, int64_t m, int64_t n, int64_t k,
+                         const void *A, int64_t lda, const void *B, int64_t ldb, void *C, int64_t ldc,
+                         const float *act_scales, const int32_t *act_sums, float weight_scale) {
+#if defined(__AVX2__)
+    tinyBLAS_I2S_AVX tb{
+        k, (const uint8_t *)A, lda,
+        (const int8_t *)B, ldb,
+        (float *)C, ldc,
+        params->ith, params->nth,
+        act_scales, act_sums, weight_scale};
+    tb.matmul(m, n);
+    return true;
+#else
+    (void)params; (void)m; (void)n; (void)k;
+    (void)A; (void)lda; (void)B; (void)ldb; (void)C; (void)ldc;
+    (void)act_scales; (void)act_sums; (void)weight_scale;
+    return false;
+#endif
 }
