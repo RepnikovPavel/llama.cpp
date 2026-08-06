@@ -4875,6 +4875,7 @@ static void quantize_row_iq1_narrow_impl(enum ggml_type type, const float * GGML
                     uint8_t h = 0;
                     for (int k = 0; k < block_size/8; ++k) {
                         const uint16_t gi = index[(block_size/8)*ib + k];
+                        GGML_ASSERT(gi < ngrid); // else the high bits corrupt the next index
                         y_xs[ibl].qs[(block_size/8)*ib + k] = gi & 255;
                         h |= (gi >> 8) << 2*k;
                     }
@@ -4888,6 +4889,7 @@ static void quantize_row_iq1_narrow_impl(enum ggml_type type, const float * GGML
                     uint8_t h = 0;
                     for (int k = 0; k < block_size/8; ++k) {
                         const uint16_t gi = index[(block_size/8)*ib + k];
+                        GGML_ASSERT(gi < ngrid);
                         y_xxs[ibl].qs[(block_size/8)*ib + k] = gi & 255;
                         h |= (gi >> 8) << k;
                     }
@@ -4898,6 +4900,7 @@ static void quantize_row_iq1_narrow_impl(enum ggml_type type, const float * GGML
                 y_xxxs[ibl].d = GGML_FP32_TO_FP16(0.f);
                 memset(y_xxxs[ibl].sc, 0, QK_K/64);
                 for (int j = 0; j < QK_K/8; ++j) {
+                    GGML_ASSERT(index[j] < ngrid);
                     y_xxxs[ibl].qs[j] = index[j] & 255;
                 }
                 break;
@@ -4942,8 +4945,13 @@ static size_t quantize_iq1_narrow(enum ggml_type type, const float * GGML_RESTRI
     float  pairs[2*IQ1S_BLOCK_SIZE];
     uint16_t index[QK_K/8];
     int8_t shifts[QK_K/IQ1S_BLOCK_SIZE];
-    const size_t block_bytes = type == GGML_TYPE_IQ1_XS  ? sizeof(block_iq1_xs) :
-                               type == GGML_TYPE_IQ1_XXS ? sizeof(block_iq1_xxs) : sizeof(block_iq1_xxxs);
+    size_t block_bytes = 0;
+    switch (type) {
+        case GGML_TYPE_IQ1_XS:   block_bytes = sizeof(block_iq1_xs);   break;
+        case GGML_TYPE_IQ1_XXS:  block_bytes = sizeof(block_iq1_xxs);  break;
+        case GGML_TYPE_IQ1_XXXS: block_bytes = sizeof(block_iq1_xxxs); break;
+        default: GGML_ABORT("fatal error");
+    }
     int64_t nblock = n_per_row/QK_K;
     char * qrow = (char *)dst;
     for (int64_t row = 0; row < nrow; ++row) {

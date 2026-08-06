@@ -115,6 +115,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
 static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(ggml_type type) {
     switch (type) {
         case GGML_TYPE_IQ1_S:   return 6;
+        case GGML_TYPE_IQ1_XS:  return 6;
+        case GGML_TYPE_IQ1_XXS: return 6;
+        case GGML_TYPE_IQ1_XXXS: return 6;
         case GGML_TYPE_IQ1_M:   return 6;
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 5;
@@ -155,6 +158,9 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_turing_plus(ggm
 static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_gcn(ggml_type type) {
     switch (type) {
         case GGML_TYPE_IQ1_S:   return 5;
+        case GGML_TYPE_IQ1_XS:  return 5;
+        case GGML_TYPE_IQ1_XXS: return 5;
+        case GGML_TYPE_IQ1_XXXS: return 5;
         case GGML_TYPE_IQ1_M:   return 5;
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
@@ -205,6 +211,9 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna1_rdna2(ggm
 static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type type) {
     switch (type) {
         case GGML_TYPE_IQ1_S:   return 6;
+        case GGML_TYPE_IQ1_XS:  return 6;
+        case GGML_TYPE_IQ1_XXS: return 6;
+        case GGML_TYPE_IQ1_XXXS: return 6;
         case GGML_TYPE_IQ1_M:   return 6;
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
@@ -223,6 +232,9 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type
 static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type type) {
     switch (type) {
         case GGML_TYPE_IQ1_S:   return 7;
+        case GGML_TYPE_IQ1_XS:  return 7;
+        case GGML_TYPE_IQ1_XXS: return 7;
+        case GGML_TYPE_IQ1_XXXS: return 7;
         case GGML_TYPE_IQ1_M:   return 7;
         case GGML_TYPE_IQ2_S:   return 4;
         case GGML_TYPE_IQ2_XS:  return 4;
@@ -302,6 +314,9 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
                 case GGML_TYPE_Q6_K:
                     return ne11 <= 4;
                 case GGML_TYPE_IQ1_S:
+                case GGML_TYPE_IQ1_XS:
+                case GGML_TYPE_IQ1_XXS:
+                case GGML_TYPE_IQ1_XXXS:
                     return ne11 <= 5;
                 case GGML_TYPE_IQ2_XXS:
                 case GGML_TYPE_IQ3_S:

@@ -4356,9 +4356,10 @@ class GGMLQuantizationType(IntEnum):
     MXFP4   = 39
     NVFP4   = 40
     Q1_0    = 41
-    IQ1_XS   = 42
-    IQ1_XXS  = 43
-    IQ1_XXXS = 44
+    # 42..63 reserved for upstream ggml (42 is Q2_0); fork-local types start at 64
+    IQ1_XS   = 64
+    IQ1_XXS  = 65
+    IQ1_XXXS = 66
 
 
 class ExpertGatingFuncType(IntEnum):
@@ -4413,9 +4414,10 @@ class LlamaFileType(IntEnum):
     MOSTLY_MXFP4_MOE     = 38  # except 1d tensors
     MOSTLY_NVFP4         = 39  # except 1d tensors
     MOSTLY_Q1_0          = 40  # except 1d tensors
-    MOSTLY_IQ1_XS        = 41  # except 1d tensors
-    MOSTLY_IQ1_XXS       = 42  # except 1d tensors
-    MOSTLY_IQ1_XXXS      = 43  # except 1d tensors
+    # 41..63 reserved for upstream llama.cpp (41 is Q2_0); fork-local ftypes start at 64
+    MOSTLY_IQ1_XS        = 64  # except 1d tensors
+    MOSTLY_IQ1_XXS       = 65  # except 1d tensors
+    MOSTLY_IQ1_XXXS      = 66  # except 1d tensors
 
     GUESSED              = 1024  # not specified in the model file
 

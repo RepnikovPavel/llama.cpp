@@ -22,17 +22,6 @@
 #endif
 #include "ggml-common.h"
 
-// The narrow IQ1 types are fork-local, so their QR/QI live here rather than in the frozen
-// ggml-common.h. They pack qs exactly like IQ1_S: 8 weights per byte, 4 bytes per sub-block.
-#define QI1_XS (QK_K / (4*QR1_XS))
-#define QR1_XS 8
-
-#define QI1_XXS (QK_K / (4*QR1_XXS))
-#define QR1_XXS 8
-
-#define QI1_XXXS (QK_K / (4*QR1_XXXS))
-#define QR1_XXXS 8
-
 #include <array>
 #include <algorithm>
 #include <cassert>
