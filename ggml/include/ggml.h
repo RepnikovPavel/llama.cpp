@@ -429,7 +429,12 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        // Below IQ1_S: the same 8-element ternary codebook with a narrower index. See
+        // block_iq1_xs / block_iq1_xxs / block_iq1_xxxs in ggml-common.h.
+        GGML_TYPE_IQ1_XS   = 42, // 1.4375 bpw, 1024-entry grid
+        GGML_TYPE_IQ1_XXS  = 43, // 1.3125 bpw,  512-entry grid
+        GGML_TYPE_IQ1_XXXS = 44, // 1.1875 bpw,  256-entry grid
+        GGML_TYPE_COUNT   = 45,
     };
 
     // precision
@@ -473,6 +478,9 @@ extern "C" {
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ1_XS   = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ1_XXS  = 29, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ1_XXXS = 30, // except 1d tensors
     };
 
     // available tensor operations:
