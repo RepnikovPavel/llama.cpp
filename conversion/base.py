@@ -72,6 +72,54 @@ class ModelType(IntEnum):
     MMPROJ = 2
 
 
+def repack_mxfp4_blocks(packed: Tensor, scale: Tensor) -> np.ndarray:
+    """
+    Repack 4-bit MX weights into ggml `block_mxfp4`. Lossless - this only moves
+    bits, it does not dequantize and requantize.
+
+    Source (compressed-tensors "mxfp4-pack-quantized", and DeepSeek-V4's
+    equivalent weight/scale pair):
+      packed  uint8 [rows, cols/2]  two 4-bit codes per byte, element 2i in the
+                                    low nibble and 2i+1 in the high nibble
+      scale   uint8 [rows, cols/32] one E8M0 biased exponent per 32-element group
+
+    Destination, per 32-element group: one scale byte then 16 code bytes, where
+    byte j holds element j in the low nibble and element j+16 in the high nibble
+    (see dequantize_row_mxfp4 in ggml-quants.c).
+
+    The 4-bit codes themselves need no remapping: both sides use sign in bit 3
+    and a magnitude index into (0, .5, 1, 1.5, 2, 3, 4, 6), which is exactly
+    ggml's kvalues_mxfp4 order. ggml's kvalues are doubled and its scale is
+    halved (GGML_E8M0_TO_FP32_HALF), so the represented value is unchanged.
+    """
+    p = packed.contiguous().view(torch.uint8)
+    s = scale.contiguous().view(torch.uint8)
+
+    rows, packed_cols = p.shape
+    cols = packed_cols * 2
+    if cols % 32 != 0:
+        raise ValueError(f"MXFP4 source row has {cols} values, expected a multiple of 32")
+
+    n_blocks = cols // 32
+    if tuple(s.shape) != (rows, n_blocks):
+        raise ValueError(f"MXFP4 scale shape {tuple(s.shape)} does not match {(rows, n_blocks)}")
+
+    # 0xff is the NaN E8M0 exponent; caught later without the tensor name
+    n_bad = int((s == 0xFF).sum())
+    if n_bad:
+        raise ValueError(f"invalid E8M0 scale byte 0xff in {n_bad} MXFP4 block(s)")
+
+    src = p.reshape(rows, n_blocks, 16)
+    lo = src & 0x0F           # elements 0, 2, 4, ...
+    hi = (src >> 4) & 0x0F    # elements 1, 3, 5, ...
+
+    vals = torch.stack((lo, hi), dim=-1).reshape(rows, n_blocks, 32)
+    qs = vals[:, :, :16] | (vals[:, :, 16:] << 4)
+
+    raw = torch.cat((s.unsqueeze(-1), qs.to(torch.uint8)), dim=-1)
+    return raw.reshape(rows, n_blocks * 17).cpu().numpy()
+
+
 class ModelBase:
     _model_classes: dict[ModelType, dict[str, type[ModelBase]]] = {
         ModelType.TEXT: {},
@@ -94,6 +142,7 @@ class ModelBase:
     metadata: gguf.Metadata
     dir_model_card: Path
     remote_hf_model_id: str | None
+    target_model_dir: Path | None
 
     # subclasses should define this!
     model_arch: gguf.MODEL_ARCH
@@ -108,7 +157,9 @@ class ModelBase:
     sentence_transformers_dense_modules: bool = False
 
     # MTP (multi-token prediction) export modes; set by main() before instantiation.
-    # Architectures opt in by overriding the handling (see _Qwen35MtpMixin).
+    # Architectures that implement the filtering/export behavior opt in by
+    # setting supports_mtp_export = True on their model class or a mixin.
+    supports_mtp_export: bool = False
     mtp_only: bool = False
     no_mtp: bool = False
 
@@ -119,6 +170,7 @@ class ModelBase:
                  small_first_shard: bool = False, hparams: dict[str, Any] | None = None, remote_hf_model_id: str | None = None,
                  disable_mistral_community_chat_template: bool = False,
                  sentence_transformers_dense_modules: bool = False,
+                 target_model_dir: Path | None = None,
                  fuse_gate_up_exps: bool = False,
                  fp8_as_q8: bool = False):
         if type(self) is ModelBase or \
@@ -139,6 +191,7 @@ class ModelBase:
         self.dry_run = dry_run
         self.remote_hf_model_id = remote_hf_model_id
         self.sentence_transformers_dense_modules = sentence_transformers_dense_modules
+        self.target_model_dir = target_model_dir
         self.fuse_gate_up_exps = fuse_gate_up_exps
         self._gate_exp_buffer: dict[int, Tensor] = {}
         self._up_exp_buffer: dict[int, Tensor] = {}
@@ -263,8 +316,17 @@ class ModelBase:
                             data_gen = lambda data=data_torch: LazyTorchTensor.from_eager(data)  # noqa: E731
                         else:
                             data_gen = lambda data=data_torch: data  # noqa: E731
+                    # the index maps each tensor to one shard; a duplicate would silently overwrite it
+                    if weight_map and name in weight_map and weight_map[name] != part_name:
+                        raise ValueError(
+                            f"tensor '{name}' found in '{part_name}' but the index assigns "
+                            f"it to '{weight_map[name]}'; refusing to load a wrong-shard copy")
                     if titem := self.filter_tensors((name, data_gen)):
                         tname, tgen = titem
+                        if tname in tensors:
+                            raise ValueError(
+                                f"duplicate tensor '{tname}' found in multiple model parts; "
+                                f"refusing to silently overwrite")
                         tensors[tname] = tgen
 
         # verify tensor name presence and identify potentially missing files
@@ -532,6 +594,20 @@ class ModelBase:
                 else:
                     raise NotImplementedError(f"Quant format {quant_format!r} for method {quant_method!r} is not yet supported")
             elif quant_method == "modelopt":
+                # Stacked-expert NVFP4 checkpoints (e.g. Inkling-NVFP4) store experts as
+                # w13_weight/w2_weight with .scale/.scale2/.input_amax/.original_shape
+                # auxiliaries; the main tensors do not end in .weight, so the NVFP4 path
+                # below would silently skip them. Reject them with a clear error.
+                stacked_expert_aux = [
+                    n for n in self.model_tensors
+                    if n.endswith((".scale2", ".input_amax", ".original_shape"))
+                ]
+                if stacked_expert_aux:
+                    raise NotImplementedError(
+                        "This checkpoint stores quantized experts in the stacked ModelOpt NVFP4 layout "
+                        f"({len(stacked_expert_aux)} auxiliary tensors like {stacked_expert_aux[0]!r}), "
+                        "which is not supported yet. Convert from the unquantized (BF16) checkpoint instead."
+                    )
                 # Mixed-precision ModelOpt models: NVFP4 tensors are handled by
                 # _generate_nvfp4_tensors; FP8 tensors have 1D weight_scale and
                 # are dequantized here. k/v scale tensors are unused.
@@ -1018,6 +1094,14 @@ class ModelBase:
 
     def write(self):
         self.prepare_tensors()
+        # zero tensors means the shards were never discovered, yet a metadata-only GGUF logs success
+        n_written = sum(len(shard) for shard in self.gguf_writer.tensors)
+        if n_written == 0:
+            raise ValueError(
+                "no tensors were written: the model shards could not be found. "
+                "Check that the safetensors filenames are discoverable (they must "
+                "start with 'model') or that model.safetensors exists."
+            )
         self.prepare_metadata(vocab_only=False)
         self.gguf_writer.write_header_to_file(path=self.fname_out)
         self.gguf_writer.write_kv_data_to_file()
@@ -1116,8 +1200,10 @@ class TextModel(ModelBase):
 
         rope_theta = self.find_hparam(["global_rope_theta", "rope_global_theta", "rope_theta_global", "rope_theta", "rotary_emb_base"], optional=True)
         local_rope_theta = self.find_hparam(["local_rope_theta", "rope_local_theta", "rope_theta_local", "swa_rope_theta", "rope_local_base_freq"], optional=True)
+        partial_rotary_factor = self.find_hparam(["partial_rotary_factor", "rope_pct", "rope_percent"], optional=True)
+        original_max_position_embeddings = self.find_hparam(["original_max_position_embeddings"], optional=True)
 
-        # Ensure "rope_theta" and "rope_type" is mirrored in rope_parameters
+        # Ensure global params are mirrored in rope_parameters
         if "full_attention" not in self.rope_parameters and "sliding_attention" not in self.rope_parameters:
             if local_rope_theta is not None:
                 self.rope_parameters["sliding_attention"] = {"rope_theta": local_rope_theta}
@@ -1125,6 +1211,10 @@ class TextModel(ModelBase):
                 self.rope_parameters["rope_theta"] = rope_theta
             if "rope_type" not in self.rope_parameters and (rope_type := self.rope_parameters.get("type")) is not None:
                 self.rope_parameters["rope_type"] = rope_type
+            if "partial_rotary_factor" not in self.rope_parameters and partial_rotary_factor is not None:
+                self.rope_parameters["partial_rotary_factor"] = partial_rotary_factor
+            if "original_max_position_embeddings" not in self.rope_parameters and original_max_position_embeddings is not None:
+                self.rope_parameters["original_max_position_embeddings"] = original_max_position_embeddings
 
     @classmethod
     def __init_subclass__(cls):
@@ -1145,7 +1235,7 @@ class TextModel(ModelBase):
                 or "projector." in name or "pre_mm_projector_norm" in name \
                 or "image_newline" in name or "view_seperator" in name \
                 or "patch_embed" in name or "patch_embedding" in name \
-                or "patch_merger." in name or "model.connector." in name:
+                or "patch_merger." in name or "patch_merge_mlp." in name or "model.connector." in name:
             return None
 
         return super().filter_tensors(item)
@@ -1192,7 +1282,7 @@ class TextModel(ModelBase):
             self.gguf_writer.add_embedding_length(n_embd)
             logger.info(f"gguf: embedding length = {n_embd}")
 
-        if (n_ff := self.find_hparam(["intermediate_size", "n_inner", "hidden_dim"], optional=True)) is not None:
+        if (n_ff := self.find_hparam(["prefix_dense_intermediate_size", "dense_intermediate_size", "intermediate_size", "n_inner", "hidden_dim"], optional=True)) is not None:
             self.gguf_writer.add_feed_forward_length(n_ff)
             logger.info(f"gguf: feed forward length = {n_ff}")
 
@@ -1264,7 +1354,7 @@ class TextModel(ModelBase):
         if (f_norm_eps := self.find_hparam(["layer_norm_eps", "layer_norm_epsilon", "norm_epsilon"], optional=True)) is not None:
             self.gguf_writer.add_layer_norm_eps(f_norm_eps)
             logger.info(f"gguf: layer norm epsilon = {f_norm_eps}")
-        if (n_experts := self.find_hparam(["num_local_experts", "num_experts"], optional=True)) is not None:
+        if (n_experts := self.find_hparam(["num_local_experts", "num_experts", "n_routed_experts"], optional=True)) is not None:
             self.gguf_writer.add_expert_count(n_experts)
             logger.info(f"gguf: expert count = {n_experts}")
         if (n_experts_used := self.find_hparam(["num_experts_per_tok", "num_experts_per_token", "top_k_experts"], optional=True)) is not None:
@@ -1277,11 +1367,13 @@ class TextModel(ModelBase):
             self.gguf_writer.add_expert_group_used_count(n_group_used)
             logger.info(f"gguf: expert groups used count = {n_group_used}")
 
-        if (score_func := self.find_hparam(["score_function", "scoring_func", "score_func", "moe_router_activation", "moe_router_activation_func"], optional=True)) is not None:
+        if (score_func := self.find_hparam(["score_function", "scoring_func", "score_func", "moe_router_activation", "moe_router_activation_func", "expert_selection_fn"], optional=True)) is not None:
             if score_func == "sigmoid":
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SIGMOID)
             elif score_func == "softmax":
                 self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SOFTMAX)
+            elif score_func == "sqrtsoftplus":
+                self.gguf_writer.add_expert_gating_func(gguf.ExpertGatingFuncType.SQRTSOFTPLUS)
             else:
                 raise ValueError(f"Unsupported expert score gating function value: {score_func}")
             logger.info(f"gguf: expert score gating function = {score_func}")
@@ -1492,6 +1584,9 @@ class TextModel(ModelBase):
         if chkhsh == "d772b220ace2baec124bed8cfafce0ead7d6c38a4b65ef11261cf9d5d62246d1":
             # ref: https://huggingface.co/CohereLabs/tiny-aya-base
             res = "tiny_aya"
+        if chkhsh == "52df12b4c8d4176e7481aab4b6e8454d1fd0a210a04a574f6d4e067d10e23c3e":
+            # ref: https://huggingface.co/CohereLabs/North-Mini-Code-1.0
+            res = "cohere2moe"
         if chkhsh == "e636dc30a262dcc0d8c323492e32ae2b70728f4df7dfe9737d9f920a282b8aea":
             # ref: https://huggingface.co/Qwen/Qwen1.5-7B
             res = "qwen2"
@@ -1666,6 +1761,9 @@ class TextModel(ModelBase):
         if chkhsh == "9dcf830ee9990cdbf78cc523a5f7bd9ad8f3f9890c2d3581d2785ad10f07049d":
             # ref: https://huggingface.co/JetBrains/Mellum2-12B-A2.5B-Base
             res = "mellum2"
+        if chkhsh == "972da7b59cec44d1f0a490a86c96df53859e486e481563e5dddac155013d87ac":
+            # ref: https://huggingface.co/poolside/Laguna-XS.2
+            res = "laguna"
 
         if res is None:
             logger.warning("\n")
@@ -2481,6 +2579,7 @@ class LazyTorchTensor(gguf.LazyBase):
         torch.float16: np.float16,
         torch.float32: np.float32,
         torch.uint8: np.uint8,
+        torch.int64: np.int64,
     }
 
     # only used when byteswapping data. Only correct size is needed
@@ -2587,6 +2686,17 @@ class LazyTorchTensor(gguf.LazyBase):
         return cls._wrap_fn(func)(*args, **kwargs)
 
 
+if hasattr(torch, "float8_e8m0fnu"):
+    _torch_float8_e8m0 = torch.float8_e8m0fnu
+    LazyTorchTensor._dtype_map[_torch_float8_e8m0] = np.uint8
+    LazyTorchTensor._dtype_byteswap_map[_torch_float8_e8m0] = np.uint8
+    LazyTorchTensor._dtype_str_map["F8_E8M0"] = _torch_float8_e8m0
+else:
+    # Older torch builds do not expose F8_E8M0. Keep the raw bytes so callers
+    # that know the format can decode them explicitly.
+    LazyTorchTensor._dtype_str_map["F8_E8M0"] = torch.uint8
+
+
 def get_model_architecture(hparams: dict[str, Any], model_type: ModelType) -> str:
     # TODO @ngxson : this won't work correctly if the model has both audio & vision encoders
     # maybe we should fallback to text model's arch in that case, since not many models have both
@@ -2602,7 +2712,10 @@ def get_model_architecture(hparams: dict[str, Any], model_type: ModelType) -> st
     # Step3-VL keeps text config under text_config but uses a custom top-level architecture.
     # For text conversion we route to a dedicated text-only class.
     # TODO: refactor this later to avoid adding exception here
-    if model_type == ModelType.TEXT and arch in ("StepVLForConditionalGeneration", "Sarashina2VisionForCausalLM", "Exaone4_5_ForConditionalGeneration", "Step3p7ForConditionalGeneration"):
+    # Kimi-K3's text_config reports "KimiLinearForCausalLM", which is the older
+    # Kimi-Linear-48B architecture and cannot load K3 (no attention residuals,
+    # latent MoE, situ, ...). Route on the top-level architecture instead.
+    if model_type == ModelType.TEXT and arch in ("StepVLForConditionalGeneration", "Sarashina2VisionForCausalLM", "Exaone4_5_ForConditionalGeneration", "Step3p7ForConditionalGeneration", "KimiK3ForConditionalGeneration"):
         return arch
 
     # if "architectures" is found in the sub-config, use that instead

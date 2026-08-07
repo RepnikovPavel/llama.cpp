@@ -155,9 +155,13 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
+
+    // Get the model file type (quantization) as a string, e.g. "Q8_0" or "Q4_K - Medium"
+    LLAMA_API const char * llama_ftype_name(enum llama_ftype ftype);
 
     enum llama_rope_scaling_type {
         LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED = -1,
@@ -197,6 +201,17 @@ extern "C" {
         LLAMA_SPLIT_MODE_ROW    = 2, // split layers and KV across GPUs, use tensor parallelism if supported
         LLAMA_SPLIT_MODE_TENSOR = 3,
     };
+
+    enum llama_load_mode {
+        LLAMA_LOAD_MODE_NONE       = 0, // no special loading mode
+        LLAMA_LOAD_MODE_MMAP       = 1, // memory map the model
+        LLAMA_LOAD_MODE_MLOCK      = 2, // force system to keep model in RAM rather than swapping or compressing
+        LLAMA_LOAD_MODE_MMAP_MLOCK = 3, // mmap + force system to keep model in RAM rather than swapping or compressing
+        LLAMA_LOAD_MODE_DIRECT_IO  = 4, // use direct I/O if available
+    };
+
+    LLAMA_API const char * llama_load_mode_name(enum llama_load_mode load_mode);
+    LLAMA_API enum llama_load_mode llama_load_mode_from_str(const char * str);
 
     enum llama_context_type {
         LLAMA_CONTEXT_TYPE_DEFAULT = 0,
@@ -297,6 +312,7 @@ extern "C" {
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
+        enum llama_load_mode  load_mode;  // how to load the model
 
         // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE
         int32_t main_gpu;
@@ -317,13 +333,11 @@ extern "C" {
 
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;      // only load the vocabulary, no weights
-        bool use_mmap;        // use mmap if possible
-        bool use_direct_io;   // use direct io, takes precedence over use_mmap when supported
-        bool use_mlock;       // force system to keep model in RAM
         bool check_tensors;   // validate model tensor data
         bool use_extra_bufts; // use extra buffer types (used for weight repacking)
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
+        bool load_mtp;        // whether to load MTP layers
     };
 
     struct llama_sampler_seq_config {
@@ -558,14 +572,64 @@ extern "C" {
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
 
-    LLAMA_API int32_t llama_model_n_ctx_train(const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_embd     (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_embd_inp (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_embd_out (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
-    LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);
+    // DiffusionGemma self-conditioning: set per-request state for the next llama_decode. sc_logits is
+    // [n_vocab * canvas_length] host floats (previous step's raw logits; NULL when !enabled). use_sc is a
+    // {0,1} gate; temp_inv = 1/temperature. !enabled = byte-identical to zero-SC; no-op for other models.
+    LLAMA_API void llama_diffusion_set_sc(
+            struct llama_model * model,
+                   const float * sc_logits,
+                         float   use_sc,
+                         float   temp_inv,
+                          bool   enabled);
+
+    // DiffusionGemma device-resident self-conditioning: when enabled, the SC input is read from a persistent
+    // device buffer (written in-graph from the previous step's logits) instead of a per-step host upload. The
+    // SC math is unchanged/bit-identical; single-device only. No-op for other models. Caller restores false.
+    LLAMA_API void llama_diffusion_set_device_sc(
+            struct llama_model * model,
+                          bool   enabled);
+
+    // DiffusionGemma Stage-1 device sampling: argmax/entropy/one multinomial draw per canvas position read
+    // directly from the device SC buffer (sc_dev), removing the per-step full-canvas logits download + host
+    // reductions. u is [n_tokens] host pre-drawn uniforms (the host RNG stream, for reproducibility); argmax,
+    // entropy, sampled are [n_tokens] host outputs. Caller MUST llama_synchronize(ctx) first. Requires a
+    // single CUDA device + device-resident SC on. Returns false (caller falls back to the host path) when
+    // unavailable. argmax matches the host bit-for-bit; entropy/sampled differ only by FP reduction order.
+    LLAMA_API bool llama_diffusion_device_sample(
+            const struct llama_model * model,
+                       const float   * u,
+                               int   * argmax,
+                             float   * entropy,
+                               int   * sampled,
+                               int     n_tokens,
+                             float     inv_temp);
+
+    // DiffusionGemma prompt KV caching: select the forward phase for the next llama_decode (P = block
+    // prompt length, used to size the store; no-op otherwise).  0 = UNIFIED (no-cache [prompt|canvas]),
+    // 1 = PREFILL (forward the prompt chunk starting at off, writing the K,V store causally),  2 = DECODE
+    // (forward the canvas, read the cached prompt K,V).  off is the chunk's global start (PREFILL only;
+    // pass 0 for an unchunked single-shot prefill).
+    LLAMA_API void llama_diffusion_set_phase(
+            struct llama_model * model,
+                           int   phase,
+                       int32_t   P,
+                       int32_t   off);
+
+    // DiffusionGemma prompt-KV store bytes per prompt token (0 for other models). Pass use_f16 = whether
+    // flash attention is enabled (the store is F16 under FA, F32 otherwise). Sizes context against the store.
+    LLAMA_API size_t llama_diffusion_pkv_bytes_per_token(
+            const struct llama_model * model,
+                              bool      use_f16);
+
+    LLAMA_API int32_t llama_model_n_ctx_train  (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_embd       (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_embd_inp   (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_embd_out   (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_layer      (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_layer_nextn(const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_head       (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_head_kv    (const struct llama_model * model);
+    LLAMA_API int32_t llama_model_n_swa        (const struct llama_model * model);
 
     // Get the model's RoPE frequency scaling factor
     LLAMA_API float llama_model_rope_freq_scale_train(const struct llama_model * model);
@@ -604,6 +668,9 @@ extern "C" {
 
     // Get a string describing the model type
     LLAMA_API int32_t llama_model_desc(const struct llama_model * model, char * buf, size_t buf_size);
+
+    // Get the model file type (quantization), e.g. LLAMA_FTYPE_MOSTLY_Q8_0
+    LLAMA_API enum llama_ftype llama_model_ftype(const struct llama_model * model);
 
     // Returns the total size of all the tensors in the model in bytes
     LLAMA_API uint64_t llama_model_size(const struct llama_model * model);
@@ -1085,6 +1152,9 @@ extern "C" {
     LLAMA_API bool llama_vocab_get_add_eos(const struct llama_vocab * vocab);
     LLAMA_API bool llama_vocab_get_add_sep(const struct llama_vocab * vocab);
 
+    // model-specific suppress tokens (gguf key: tokenizer.ggml.suppress_tokens)
+    LLAMA_API const llama_token * llama_vocab_get_suppress_tokens(const struct llama_vocab * vocab, int32_t * n_suppress_tokens);
+
     LLAMA_API llama_token llama_vocab_fim_pre(const struct llama_vocab * vocab);
     LLAMA_API llama_token llama_vocab_fim_suf(const struct llama_vocab * vocab);
     LLAMA_API llama_token llama_vocab_fim_mid(const struct llama_vocab * vocab);
@@ -1403,19 +1473,19 @@ extern "C" {
 
     /// NOTE: Avoid using on the full vocabulary as searching for repeated tokens can become slow. For example, apply top-k or top-p sampling first.
     LLAMA_API struct llama_sampler * llama_sampler_init_penalties(
-                             int32_t   penalty_last_n,   // last n tokens to penalize (0 = disable penalty, -1 = context size)
-                               float   penalty_repeat,   // 1.0 = disabled
-                               float   penalty_freq,     // 0.0 = disabled
-                               float   penalty_present); // 0.0 = disabled
+                             int32_t   n_vocab,
+                             int32_t   penalty_last_n,   // last n tokens to penalize (0 = disable penalty)
+                               float   penalty_repeat,   // must be > 0.0, 1.0 = disabled
+                               float   penalty_freq,     // must be finite, 0.0 = disabled
+                               float   penalty_present); // must be finite, 0.0 = disabled
 
     ///  @details DRY sampler, designed by p-e-w, as described in: https://github.com/oobabooga/text-generation-webui/pull/5677, porting Koboldcpp implementation authored by pi6am: https://github.com/LostRuins/koboldcpp/pull/982
     LLAMA_API struct llama_sampler * llama_sampler_init_dry(
             const struct llama_vocab *  vocab,
-                             int32_t    n_ctx_train,
                                float    dry_multiplier,
                                float    dry_base,
                              int32_t    dry_allowed_length,
-                             int32_t    dry_penalty_last_n,
+                             int32_t    dry_penalty_last_n, // last n tokens to penalize (0 = disable penalty)
                           const char ** seq_breakers,
                               size_t    num_breakers);
 

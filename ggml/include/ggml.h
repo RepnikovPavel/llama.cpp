@@ -429,13 +429,15 @@ extern "C" {
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_Q2_0    = 42,
+        GGML_TYPE_COUNT   = 43,
     };
 
     // precision
     enum ggml_prec {
-        GGML_PREC_DEFAULT =  0, // stored as ggml_tensor.op_params, 0 by default
-        GGML_PREC_F32     = 10,
+        GGML_PREC_DEFAULT      =  0, // stored as ggml_tensor.op_params, 0 by default
+        GGML_PREC_F32          = 10,
+        GGML_PREC_F32_PEDANTIC = 11,
     };
 
     // op hint
@@ -473,6 +475,7 @@ extern "C" {
         GGML_FTYPE_MOSTLY_MXFP4   = 25, // except 1d tensors
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
+        GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
     };
 
     // available tensor operations:
@@ -556,6 +559,7 @@ extern "C" {
         GGML_OP_FILL,
 
         GGML_OP_FLASH_ATTN_EXT,
+        GGML_OP_FLASH_ATTN_EXT_BANDED,
         GGML_OP_FLASH_ATTN_BACK,
         GGML_OP_SSM_CONV,
         GGML_OP_SSM_SCAN,
@@ -568,6 +572,10 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_LIGHTNING_INDEXER,
+        GGML_OP_DSV4_HC_COMB,
+        GGML_OP_DSV4_HC_PRE,
+        GGML_OP_DSV4_HC_POST,
 
         GGML_OP_UNARY,
 
@@ -776,6 +784,10 @@ extern "C" {
     GGML_API bool ggml_is_contiguous_0(const struct ggml_tensor * tensor); // same as ggml_is_contiguous()
     GGML_API bool ggml_is_contiguous_1(const struct ggml_tensor * tensor); // contiguous for dims >= 1
     GGML_API bool ggml_is_contiguous_2(const struct ggml_tensor * tensor); // contiguous for dims >= 2
+
+    GGML_API bool ggml_is_contiguous_to_1(const struct ggml_tensor * tensor); // contiguous for dims < 1
+    GGML_API bool ggml_is_contiguous_to_2(const struct ggml_tensor * tensor); // contiguous for dims < 2
+    GGML_API bool ggml_is_contiguous_to_3(const struct ggml_tensor * tensor); // contiguous for dims < 3
 
     // returns whether the tensor elements are allocated as one contiguous block of memory (no gaps, but permutation ok)
     GGML_API bool ggml_is_contiguously_allocated(const struct ggml_tensor * tensor);
@@ -1422,6 +1434,7 @@ extern "C" {
 
     // change the precision of a matrix multiplication
     // set to GGML_PREC_F32 for higher precision (useful for phi-2)
+    // or GGML_PREC_F32_PEDANTIC to require true F32 arithmetic
     GGML_API void ggml_mul_mat_set_prec(
             struct ggml_tensor * a,
             enum ggml_prec       prec);
@@ -2416,6 +2429,19 @@ extern "C" {
             float                 max_bias,
             float                 logit_softcap);
 
+    // flash attention with an additive banded relative-position bias, applied after scale, no dense bias tensor:
+    //   rel_logits: [rel_extent, n_head, n_batch, ne3]; rel_dist = q_idx + (n_kv - n_batch) - kv_idx
+    //   score += rel_logits[rel_dist, head, q_idx, batch] iff 0 <= rel_dist < rel_extent
+    GGML_API struct ggml_tensor * ggml_flash_attn_ext_banded(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * mask,
+            struct ggml_tensor  * rel_logits,
+            float                 scale,
+            int64_t               rel_extent);
+
     GGML_API void ggml_flash_attn_ext_set_prec(
             struct ggml_tensor * a,
             enum ggml_prec       prec);
@@ -2573,6 +2599,63 @@ extern "C" {
             struct ggml_tensor  * state,
             int64_t               K);
 
+    // DSA lightning indexer
+    //
+    // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]
+    // k:       [n_embd_idx, 1,          n_kv,    ne3 ]
+    // weights: [n_head_idx, n_batch,    1,       ne3 ] !! prescaled !!
+    // mask:    [n_kv,       n_batch,    1,       ne33] !! f16 !!
+    // res:     [n_kv,       n_batch,    1,       ne3 ]
+    //
+    // broadcast:
+    //   ne3 % ne33 == 0
+    //
+    GGML_API struct ggml_tensor * ggml_lightning_indexer(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * weights,
+        struct ggml_tensor  * mask);
+
+    // DeepSeek V4 hyper-connections (ref. https://arxiv.org/pdf/2512.24880)
+    // In short these operations are replacements for the original residual connection (x = transformer(x) + x)
+    // using a richer representation through streams.
+    //
+    // hc_comb: mixes [(2 + hc)*hc, n_tokens], scale [3], base [(2 + hc)*hc]
+    //          -> [dst_hc, src_hc, n_tokens]
+    // logits[dst, src, t] = mixes[2*hc + dst + hc*src, t]*scale[2]
+    //                         + base[2*hc + dst + hc*src]
+    // Softmax over dst, add eps, normalize over src, then repeat normalization
+    // over dst followed by src for iterations 1 through n_iter - 1.
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_comb(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * mixes,
+            struct ggml_tensor  * scale,
+            struct ggml_tensor  * base,
+            float                 eps,
+            int32_t               n_iter);
+
+    // hc_pre: x [n_embd, hc, n_tokens], weights [hc, n_tokens] -> [n_embd, n_tokens]
+    //   result[i, t] = sum_h x[i, h, t]*weights[h, t]
+    //
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_pre(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * weights);
+
+    // hc_post: x [n_embd, n_tokens], residual [n_embd, hc, n_tokens],
+    //          post [hc, n_tokens], comb [dst_hc, src_hc, n_tokens]
+    //          -> [n_embd, hc, n_tokens]
+    //   result[i, dst, t] = x[i, t]*post[dst, t]
+    //                       + sum_src residual[i, src, t]*comb[dst, src, t]
+    //
+    GGML_API struct ggml_tensor * ggml_dsv4_hc_post(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * residual,
+            struct ggml_tensor  * post,
+            struct ggml_tensor  * comb);
+
     // custom operators
 
     typedef void (*ggml_custom1_op_t)(struct ggml_tensor * dst , const struct ggml_tensor * a, int ith, int nth, void * userdata);
@@ -2718,6 +2801,12 @@ extern "C" {
             int                   idx);
 
     GGML_API void ggml_build_forward_expand(
+            struct ggml_cgraph * cgraph,
+            struct ggml_tensor * tensor);
+
+    // add the tensor and its parents to the graph without marking them for compute
+    // the flag is set later, when the tensor is reached from a node that computes
+    GGML_API void ggml_build_forward_order(
             struct ggml_cgraph * cgraph,
             struct ggml_tensor * tensor);
 

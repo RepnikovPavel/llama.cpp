@@ -104,6 +104,10 @@ uint32_t llama_hparams::n_embd_inp() const {
     return n_embd_inp;
 }
 
+uint32_t llama_hparams::n_embd_inp_enc() const {
+    return n_embd_inp_enc_impl > 0 ? n_embd_inp_enc_impl : n_embd_inp();
+}
+
 uint32_t llama_hparams::n_embd_out() const {
     return n_embd_out_impl > 0 ? n_embd_out_impl : n_embd;
 }
@@ -177,6 +181,11 @@ uint32_t llama_hparams::n_embd_v_gqa_max() const {
 }
 
 uint32_t llama_hparams::n_embd_r() const {
+    if (n_embd_r_impl != 0) {
+        // explicit override (e.g. inkling: 4 packed shortconv streams per layer)
+        return n_embd_r_impl;
+    }
+
     if (wkv_head_size != 0) {
         // for RWKV models
         return token_shift_count * n_embd;
@@ -242,6 +251,14 @@ bool llama_hparams::is_mla() const {
            (n_embd_head_k_mla_impl != 0 && n_embd_head_v_mla_impl != 0));
 
     return n_embd_head_k_mla_impl != 0 && n_embd_head_v_mla_impl != 0;
+}
+
+bool llama_hparams::is_indexer_full(uint32_t il) const {
+    if (il < n_layer()) {
+        return is_indexer_full_impl[il];
+    }
+
+    GGML_ABORT("%s: il (%u) out of bounds (n_layer: %u)\n", __func__, il, n_layer());
 }
 
 uint32_t llama_hparams::n_embd_head_k_mla() const {
