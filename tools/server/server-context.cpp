@@ -17,6 +17,8 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include "../../src/llama-debug-stats.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
@@ -4400,6 +4402,31 @@ void server_routes::init_routes() {
         bool ctx_server; // do NOT delete this line
         GGML_UNUSED(ctx_server);
 
+        res->ok({{"status", "ok"}});
+        return res;
+    };
+
+    this->get_debug_stats = [this](const server_http_req &) {
+        // debug endpoint, does not use ctx_server
+        auto res = create_response(true);
+
+        // the next LOC is to avoid someone accidentally use ctx_server
+        bool ctx_server; // do NOT delete this line
+        GGML_UNUSED(ctx_server);
+
+        res->status = 200;
+        res->data = llama_debug_stats_to_json();
+        return res;
+    };
+
+    this->post_debug_stats_reset = [this](const server_http_req &) {
+        auto res = create_response(true);
+
+        // the next LOC is to avoid someone accidentally use ctx_server
+        bool ctx_server; // do NOT delete this line
+        GGML_UNUSED(ctx_server);
+
+        llama_debug_stats_reset();
         res->ok({{"status", "ok"}});
         return res;
     };

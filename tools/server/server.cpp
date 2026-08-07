@@ -233,6 +233,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
     ctx_http.get ("/health",                   ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",                ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/metrics",                  ex_wrapper(routes.get_metrics));
+    ctx_http.get ("/debug/stats",              ex_wrapper(routes.get_debug_stats));
+    ctx_http.post("/debug/stats/reset",        ex_wrapper(routes.post_debug_stats_reset));
     ctx_http.get ("/props",                    ex_wrapper(routes.get_props));
     ctx_http.post("/props",                    ex_wrapper(routes.post_props));
     ctx_http.get ("/models",                   ex_wrapper(routes.get_models)); // public endpoint (no API key check)

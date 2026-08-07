@@ -2,6 +2,7 @@
 
 #include "ggml.h"
 #include "llama-arch.h"
+#include "llama-debug-stats.h"
 #include "llama-graph.h"
 #include "llama-impl.h"
 #include "llama-batch.h"
@@ -1347,7 +1348,14 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
-        ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        if (llama_debug_stats_enabled()) {
+            debug_eval.sched             = sched.get();
+            debug_eval.chained_cb        = cparams.cb_eval;
+            debug_eval.chained_user_data = cparams.cb_eval_user_data;
+            ggml_backend_sched_set_eval_callback(sched.get(), llama_debug_eval_callback, &debug_eval);
+        } else {
+            ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+        }
 
         //const auto t_start_us = ggml_time_us();
 
