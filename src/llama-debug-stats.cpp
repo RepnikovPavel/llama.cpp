@@ -164,7 +164,7 @@ void record_node(ggml_backend_sched_t sched, ggml_tensor * t) {
 // contiguous argsort result t->src[0] holds all n_expert sorted ids per token
 bool is_expert_selection_node(const ggml_tensor * t) {
     return t->op == GGML_OP_VIEW &&
-           strncmp(t->name, "ffn_moe_topk-", 14) == 0 &&
+           strncmp(t->name, "ffn_moe_topk-", 13) == 0 &&
            t->src[0] && t->src[0]->op == GGML_OP_ARGSORT;
 }
 
