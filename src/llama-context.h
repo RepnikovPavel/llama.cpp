@@ -3,6 +3,7 @@
 #include "llama.h"
 #include "llama-ext.h"
 #include "llama-cparams.h"
+#include "llama-debug-stats.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
 #include "llama-impl.h"
@@ -326,6 +327,9 @@ private:
     std::vector<swap_info> output_swaps;
 
     ggml_backend_sched_ptr sched;
+
+    // user_data for the debug eval callback, must outlive the scheduler (llama-debug-stats)
+    llama_debug_eval_data debug_eval;
 
     bool sched_need_reserve = true;
 
