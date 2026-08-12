@@ -29,6 +29,9 @@ struct debug_stats {
     bool        expert_trace_enabled = false;
     std::string expert_trace_path;
 
+    bool        layer_dump_enabled = false;
+    std::string layer_dump_path;
+
     std::map<std::string, std::map<std::string, op_stats>> backends; // backend name -> op name -> stats
 
     uint64_t resets = 0;
@@ -37,6 +40,9 @@ struct debug_stats {
     FILE *   trace_file        = nullptr;
     bool     trace_open_failed = false;
     uint64_t trace_seq         = 0;
+
+    FILE *   layer_dump_file        = nullptr;
+    bool     layer_dump_open_failed = false;
 
     debug_stats() {
         const char * env_ops = getenv("LLAMA_DEBUG_OP_COUNT");
@@ -48,6 +54,12 @@ struct debug_stats {
             expert_trace_path    = env_trace;
         }
 
+        const char * env_dump = getenv("LLAMA_DEBUG_LAYER_DUMP");
+        if (env_dump && env_dump[0] != '\0') {
+            layer_dump_enabled = true;
+            layer_dump_path    = env_dump;
+        }
+
         t_reset = std::chrono::steady_clock::now();
     }
 
@@ -55,10 +67,13 @@ struct debug_stats {
         if (trace_file) {
             fclose(trace_file);
         }
+        if (layer_dump_file) {
+            fclose(layer_dump_file);
+        }
     }
 
     bool enabled() const {
-        return op_count_enabled || expert_trace_enabled;
+        return op_count_enabled || expert_trace_enabled || layer_dump_enabled;
     }
 };
 
@@ -219,6 +234,75 @@ void trace_experts(const ggml_tensor * t) {
     fflush(s.trace_file);
 }
 
+// layer output nodes: the model build functions name the residual state at the
+// end of layer <il> "l_out-<il>" (deepseek2, dflash) or "l_last-<il>" (deepseek4),
+// and the final norm "result_norm" (see the cb() calls in src/models/)
+bool is_layer_dump_node(const ggml_tensor * t) {
+    // skip auto-suffixed views like "l_last-3 (reshaped)" - same data as the base node
+    if (strchr(t->name, '(')) {
+        return false;
+    }
+    return strncmp(t->name, "l_out-", 6) == 0 ||
+           strncmp(t->name, "l_last-", 7) == 0 ||
+           strcmp(t->name, "result_norm") == 0;
+}
+
+// binary record layout (all fields little-endian, no padding):
+//   char     name[64]   - node name, zero-padded
+//   uint32_t type       - ggml_type
+//   uint32_t n_dims
+//   int64_t  ne[4]      - dimensions
+//   uint64_t nbytes     - payload size
+//   uint8_t  payload[]  - raw tensor data (contiguous)
+// the file starts with the 8-byte magic "DSBLAYR1"
+struct layer_dump_header {
+    char     name[64];
+    uint32_t type;
+    uint32_t n_dims;
+    int64_t  ne[GGML_MAX_DIMS];
+    uint64_t nbytes;
+};
+
+void dump_layer(const ggml_tensor * t) {
+    auto & s = stats();
+    std::lock_guard<std::mutex> lock(s.mu);
+
+    if (!s.layer_dump_file) {
+        if (s.layer_dump_open_failed) {
+            return;
+        }
+        s.layer_dump_file = fopen(s.layer_dump_path.c_str(), "wb");
+        if (!s.layer_dump_file) {
+            s.layer_dump_open_failed = true;
+            fprintf(stderr, "%s: failed to open layer dump file '%s'\n", __func__, s.layer_dump_path.c_str());
+            return;
+        }
+        fwrite("DSBLAYR1", 1, 8, s.layer_dump_file);
+    }
+
+    if (!ggml_is_contiguous(t)) {
+        fprintf(stderr, "%s: skipping non-contiguous node '%s'\n", __func__, t->name);
+        return;
+    }
+
+    layer_dump_header h;
+    memset(&h, 0, sizeof(h));
+    snprintf(h.name, sizeof(h.name), "%s", t->name);
+    h.type   = t->type;
+    h.n_dims = ggml_n_dims(t);
+    for (int i = 0; i < GGML_MAX_DIMS; i++) {
+        h.ne[i] = t->ne[i];
+    }
+    h.nbytes = ggml_nbytes(t);
+
+    std::vector<uint8_t> data(h.nbytes);
+    ggml_backend_tensor_get(t, data.data(), 0, h.nbytes);
+
+    fwrite(&h, sizeof(h), 1, s.layer_dump_file);
+    fwrite(data.data(), 1, data.size(), s.layer_dump_file);
+    fflush(s.layer_dump_file);
+}
+
 void json_escape(std::string & out, const std::string & s) {
     for (char c : s) {
         switch (c) {
@@ -241,6 +325,10 @@ bool llama_debug_stats_op_count_enabled() {
 
 bool llama_debug_stats_expert_trace_enabled() {
     return stats().expert_trace_enabled;
+}
+
+bool llama_debug_stats_layer_dump_enabled() {
+    return stats().layer_dump_enabled;
 }
 
 std::string llama_debug_stats_to_json() {
@@ -325,6 +413,10 @@ bool llama_debug_eval_callback(ggml_tensor * t, bool ask, void * user_data) {
             need = true;
         }
 
+        if (llama_debug_stats_layer_dump_enabled() && is_layer_dump_node(t)) {
+            need = true;
+        }
+
         if (llama_debug_stats_op_count_enabled()) {
             record_node(d->sched, t);
         }
@@ -336,6 +428,10 @@ bool llama_debug_eval_callback(ggml_tensor * t, bool ask, void * user_data) {
 
     if (llama_debug_stats_expert_trace_enabled() && is_expert_selection_node(t)) {
         trace_experts(t);
+    }
+
+    if (llama_debug_stats_layer_dump_enabled() && is_layer_dump_node(t)) {
+        dump_layer(t);
     }
 
     bool ok = true;
